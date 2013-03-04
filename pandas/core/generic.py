@@ -1,11 +1,9 @@
 # pylint: disable=W0231,E1101
-from datetime import timedelta
 
 import numpy as np
 
 from pandas.core.index import MultiIndex
 from pandas.tseries.index import DatetimeIndex
-from pandas.tseries.offsets import DateOffset
 import pandas.core.common as com
 import pandas.lib as lib
 
@@ -38,7 +36,7 @@ class PandasObject(object):
     def _get_axis_number(cls, axis):
         axis = cls._AXIS_ALIASES.get(axis, axis)
 
-        if isinstance(axis, int):
+        if com.is_integer(axis):
             if axis in cls._AXIS_NAMES:
                 return axis
             else:
@@ -203,7 +201,7 @@ class PandasObject(object):
             raise TypeError('Index must be DatetimeIndex')
 
     def resample(self, rule, how=None, axis=0, fill_method=None,
-                 closed='right', label='right', convention='start',
+                 closed=None, label=None, convention='start',
                  kind=None, loffset=None, limit=None, base=0):
         """
         Convenience method for frequency conversion and resampling of regular
@@ -214,15 +212,18 @@ class PandasObject(object):
         rule : the offset string or object representing target conversion
         how : string, method for down- or re-sampling, default to 'mean' for
               downsampling
-        fill_method : string, fill_method for upsampling, default None
         axis : int, optional, default 0
-        closed : {'right', 'left'}, default 'right'
+        fill_method : string, fill_method for upsampling, default None
+        closed : {'right', 'left'}, default None
             Which side of bin interval is closed
-        label : {'right', 'left'}, default 'right'
+        label : {'right', 'left'}, default None
             Which bin edge label to label bucket with
         convention : {'start', 'end', 's', 'e'}
-        loffset : timedelta
+        kind: "period"/"timestamp"
+        loffset: timedelta
             Adjust the resampled time labels
+        limit: int, default None
+            Maximum size gap to when reindexing with fill_method
         base : int, default 0
             For frequencies that evenly subdivide 1 day, the "origin" of the
             aggregated intervals. For example, for '5min' frequency, base could
@@ -317,7 +318,7 @@ class PandasObject(object):
         axis = self._get_axis(axis)
 
         if len(axis) > 0:
-            new_axis = axis[np.asarray([crit(label) for label in axis])]
+            new_axis = axis[np.asarray([bool(crit(label)) for label in axis])]
         else:
             new_axis = axis
 
@@ -488,19 +489,23 @@ class NDFrame(PandasObject):
         object.__setattr__(self, '_data', data)
         object.__setattr__(self, '_item_cache', {})
 
-    def astype(self, dtype):
+    def astype(self, dtype, copy = True, raise_on_error = True):
         """
         Cast object to input numpy.dtype
+        Return a copy when copy = True (be really careful with this!)
 
         Parameters
         ----------
         dtype : numpy.dtype or Python type
+        raise_on_error : raise on invalid input
 
         Returns
         -------
         casted : type of caller
         """
-        return self._constructor(self._data, dtype=dtype)
+
+        mgr = self._data.astype(dtype, copy = copy, raise_on_error = raise_on_error)
+        return self._constructor(mgr)
 
     @property
     def _constructor(self):
@@ -589,6 +594,13 @@ class NDFrame(PandasObject):
         del self[item]
         return result
 
+    def squeeze(self):
+        """ squeeze length 1 dimensions """
+        try:
+            return self.ix[tuple([ slice(None) if len(a) > 1 else a[0] for a in self.axes ])]
+        except:
+            return self
+
     def _expand_axes(self, key):
         new_axes = []
         for k, ax in zip(key, self.axes):
@@ -625,7 +637,6 @@ class NDFrame(PandasObject):
         """
         if inplace:
             self._consolidate_inplace()
-            return self
         else:
             cons_data = self._data.consolidate()
             if cons_data is self._data:
@@ -813,6 +824,11 @@ class NDFrame(PandasObject):
     def swaplevel(self, i, j, axis=0):
         """
         Swap levels i and j in a MultiIndex on a particular axis
+
+        Parameters
+        ----------
+        i, j : int, string (can be mixed)
+            Level of index to be swapped. Can pass level name as string.
 
         Returns
         -------

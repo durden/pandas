@@ -7,12 +7,14 @@ import operator
 import sys
 import numpy as np
 from pandas.core.common import (PandasError, _mut_exclusive,
-                                _try_sort, _default_index, _infer_dtype)
+                                _try_sort, _default_index, _infer_dtype_from_scalar,
+                                notnull)
 from pandas.core.categorical import Factor
 from pandas.core.index import (Index, MultiIndex, _ensure_index,
                                _get_combined_index)
 from pandas.core.indexing import _NDFrameIndexer, _maybe_droplevels
 from pandas.core.internals import BlockManager, make_block, form_blocks
+from pandas.core.series import Series
 from pandas.core.frame import DataFrame
 from pandas.core.generic import NDFrame
 from pandas.util import py3compat
@@ -94,76 +96,73 @@ def _arith_method(func, name):
 
     def f(self, other):
         if not np.isscalar(other):
-            raise ValueError('Simple arithmetic with Panel can only be '
-                            'done with scalar values')
+            raise ValueError('Simple arithmetic with %s can only be '
+                             'done with scalar values' % self._constructor.__name__)
 
         return self._combine(other, func)
     f.__name__ = name
     return f
 
 
-def _panel_arith_method(op, name):
-    @Substitution(op)
-    def f(self, other, axis='items'):
-        """
-        Wrapper method for %s
+def _comp_method(func, name):
 
-        Parameters
-        ----------
-        other : DataFrame or Panel class
-        axis : {'items', 'major', 'minor'}
-            Axis to broadcast over
+    def na_op(x, y):
+        try:
+            result = func(x, y)
+        except TypeError:
+            xrav = x.ravel()
+            result = np.empty(x.size, dtype=x.dtype)
+            if isinstance(y, np.ndarray):
+                yrav = y.ravel()
+                mask = notnull(xrav) & notnull(yrav)
+                result[mask] = func(np.array(list(xrav[mask])),
+                                    np.array(list(yrav[mask])))
+            else:
+                mask = notnull(xrav)
+                result[mask] = func(np.array(list(xrav[mask])), y)
 
-        Returns
-        -------
-        Panel
-        """
-        return self._combine(other, op, axis=axis)
+            if func == operator.ne:  # pragma: no cover
+                np.putmask(result, -mask, True)
+            else:
+                np.putmask(result, -mask, False)
+            result = result.reshape(x.shape)
+
+        return result
+
+    @Appender('Wrapper for comparison method %s' % name)
+    def f(self, other):
+        if isinstance(other, self._constructor):
+            return self._compare_constructor(other, func)
+        elif isinstance(other, (self._constructor_sliced, DataFrame, Series)):
+            raise Exception("input needs alignment for this object [%s]" %
+                            self._constructor)
+        else:
+            return self._combine_const(other, na_op)
 
     f.__name__ = name
+
     return f
 
 
-_agg_doc = """
-Return %(desc)s over requested axis
-
-Parameters
-----------
-axis : {'items', 'major', 'minor'} or {0, 1, 2}
-skipna : boolean, default True
-    Exclude NA/null values. If an entire row/column is NA, the result
-    will be NA
-
-Returns
--------
-%(outname)s : DataFrame
-"""
-
-_na_info = """
-
-NA/null values are %s.
-If all values are NA, result will be NA"""
-
-
 class Panel(NDFrame):
-    _AXIS_ORDERS   = ['items','major_axis','minor_axis']
-    _AXIS_NUMBERS  = dict([ (a,i) for i, a in enumerate(_AXIS_ORDERS) ])
-    _AXIS_ALIASES  = {
-        'major' : 'major_axis',
-        'minor' : 'minor_axis'
+    _AXIS_ORDERS = ['items', 'major_axis', 'minor_axis']
+    _AXIS_NUMBERS = dict([(a, i) for i, a in enumerate(_AXIS_ORDERS)])
+    _AXIS_ALIASES = {
+        'major': 'major_axis',
+        'minor': 'minor_axis'
     }
-    _AXIS_NAMES    = dict([ (i,a) for i, a in enumerate(_AXIS_ORDERS) ])
+    _AXIS_NAMES = dict([(i, a) for i, a in enumerate(_AXIS_ORDERS)])
     _AXIS_SLICEMAP = {
-        'major_axis' : 'index',
-        'minor_axis' : 'columns'
-        }
-    _AXIS_LEN      = len(_AXIS_ORDERS)
+        'major_axis': 'index',
+        'minor_axis': 'columns'
+    }
+    _AXIS_LEN = len(_AXIS_ORDERS)
 
     # major
     _default_stat_axis = 1
 
     # info axis
-    _het_axis  = 0
+    _het_axis = 0
     _info_axis = _AXIS_ORDERS[_het_axis]
 
     items = lib.AxisProperty(0)
@@ -177,13 +176,25 @@ class Panel(NDFrame):
     # return the type of the slice constructor
     _constructor_sliced = DataFrame
 
-    def _construct_axes_dict(self, axes = None):
+    def _construct_axes_dict(self, axes=None, **kwargs):
         """ return an axes dictionary for myself """
-        return dict([ (a,getattr(self,a)) for a in (axes or self._AXIS_ORDERS) ])
+        d = dict([(a, getattr(self, a)) for a in (axes or self._AXIS_ORDERS)])
+        d.update(kwargs)
+        return d
 
-    def _construct_axes_dict_for_slice(self, axes = None):
+    @staticmethod
+    def _construct_axes_dict_from(self, axes, **kwargs):
+        """ return an axes dictionary for the passed axes """
+        d = dict([(a, ax) for a, ax in zip(self._AXIS_ORDERS, axes)])
+        d.update(kwargs)
+        return d
+
+    def _construct_axes_dict_for_slice(self, axes=None, **kwargs):
         """ return an axes dictionary for myself """
-        return dict([ (self._AXIS_SLICEMAP[a],getattr(self,a)) for a in (axes or self._AXIS_ORDERS) ])
+        d = dict([(self._AXIS_SLICEMAP[a], getattr(self, a))
+                 for a in (axes or self._AXIS_ORDERS)])
+        d.update(kwargs)
+        return d
 
     __add__ = _arith_method(operator.add, '__add__')
     __sub__ = _arith_method(operator.sub, '__sub__')
@@ -222,15 +233,16 @@ class Panel(NDFrame):
         copy : boolean, default False
             Copy data from inputs. Only affects DataFrame / 2d ndarray input
         """
-        self._init_data( data=data, items=items, major_axis=major_axis, minor_axis=minor_axis,
-                         copy=copy, dtype=dtype)
+        self._init_data(
+            data=data, items=items, major_axis=major_axis, minor_axis=minor_axis,
+            copy=copy, dtype=dtype)
 
     def _init_data(self, data, copy, dtype, **kwargs):
         """ generate ND initialization; axes are passed as required objects to __init__ """
         if data is None:
             data = {}
 
-        passed_axes = [ kwargs.get(a) for a in self._AXIS_ORDERS ]
+        passed_axes = [kwargs.get(a) for a in self._AXIS_ORDERS]
         axes = None
         if isinstance(data, BlockManager):
             if any(x is not None for x in passed_axes):
@@ -256,8 +268,7 @@ class Panel(NDFrame):
         if isinstance(data, BlockManager):
             return cls(data)
         else:
-            d = dict([ (i, a) for i, a in zip(cls._AXIS_ORDERS,axes) ])
-            d['copy'] = False
+            d = cls._construct_axes_dict_from(cls, axes, copy=False)
             return cls(data, **d)
 
     def _init_dict(self, data, axes, dtype=None):
@@ -275,13 +286,13 @@ class Panel(NDFrame):
                 data[k] = self._constructor_sliced(v)
 
         # extract axis for remaining axes & create the slicemap
-        raxes      = [ self._extract_axis(self, data, axis=i) if a is None else a for i, a in enumerate(axes) ]
-        raxes_sm   = self._extract_axes_for_slice(self, raxes)
+        raxes = [self._extract_axis(self, data, axis=i)
+                 if a is None else a for i, a in enumerate(axes)]
+        raxes_sm = self._extract_axes_for_slice(self, raxes)
 
         # shallow copy
         arrays = []
-        reshaped_data = data.copy()
-        haxis_shape = [ len(a) for a in raxes ]
+        haxis_shape = [len(a) for a in raxes]
         for h in haxis:
             v = values = data.get(h)
             if v is None:
@@ -296,7 +307,7 @@ class Panel(NDFrame):
                 values = v.values
             arrays.append(values)
 
-        return self._init_arrays(arrays, haxis, [ haxis ] + raxes)
+        return self._init_arrays(arrays, haxis, [haxis] + raxes)
 
     def _init_arrays(self, arrays, arr_names, axes):
         # segregates dtypes and forms blocks matching to columns
@@ -306,7 +317,7 @@ class Panel(NDFrame):
 
     @property
     def shape(self):
-        return [ len(getattr(self,a)) for a in self._AXIS_ORDERS ]
+        return [len(getattr(self, a)) for a in self._AXIS_ORDERS]
 
     @classmethod
     def from_dict(cls, data, intersect=False, orient='items', dtype=None):
@@ -348,18 +359,19 @@ class Panel(NDFrame):
         return cls(**d)
 
     def __getitem__(self, key):
-        if isinstance(getattr(self,self._info_axis), MultiIndex):
+        if isinstance(getattr(self, self._info_axis), MultiIndex):
             return self._getitem_multilevel(key)
         return super(Panel, self).__getitem__(key)
 
     def _getitem_multilevel(self, key):
-        info = getattr(self,self._info_axis)
-        loc  = info.get_loc(key)
+        info = getattr(self, self._info_axis)
+        loc = info.get_loc(key)
         if isinstance(loc, (slice, np.ndarray)):
-            new_index    = info[loc]
+            new_index = info[loc]
             result_index = _maybe_droplevels(new_index, key)
-            slices       = [loc] + [slice(None) for x in range(self._AXIS_LEN-1)]
-            new_values   = self.values[slices]
+            slices = [loc] + [slice(None) for x in range(
+                self._AXIS_LEN - 1)]
+            new_values = self.values[slices]
 
             d = self._construct_axes_dict(self._AXIS_ORDERS[1:])
             d[self._info_axis] = result_index
@@ -397,9 +409,52 @@ class Panel(NDFrame):
         return self.values
 
     def __array_wrap__(self, result):
-        d = self._construct_axes_dict(self._AXIS_ORDERS)
-        d['copy'] = False
+        d = self._construct_axes_dict(self._AXIS_ORDERS, copy=False)
         return self._constructor(result, **d)
+
+    #----------------------------------------------------------------------
+    # Comparison methods
+
+    def _indexed_same(self, other):
+        return all([getattr(self, a).equals(getattr(other, a)) for a in self._AXIS_ORDERS])
+
+    def _compare_constructor(self, other, func):
+        if not self._indexed_same(other):
+            raise Exception('Can only compare identically-labeled '
+                            'same type objects')
+
+        new_data = {}
+        for col in getattr(self, self._info_axis):
+            new_data[col] = func(self[col], other[col])
+
+        d = self._construct_axes_dict(copy=False)
+        return self._constructor(data=new_data, **d)
+
+    # boolean operators
+    __and__ = _arith_method(operator.and_, '__and__')
+    __or__ = _arith_method(operator.or_, '__or__')
+    __xor__ = _arith_method(operator.xor, '__xor__')
+
+    def __neg__(self):
+        return -1 * self
+
+    def __invert__(self):
+        return -1 * self
+
+    # Comparison methods
+    __eq__ = _comp_method(operator.eq, '__eq__')
+    __ne__ = _comp_method(operator.ne, '__ne__')
+    __lt__ = _comp_method(operator.lt, '__lt__')
+    __gt__ = _comp_method(operator.gt, '__gt__')
+    __le__ = _comp_method(operator.le, '__le__')
+    __ge__ = _comp_method(operator.ge, '__ge__')
+
+    eq = _comp_method(operator.eq, 'eq')
+    ne = _comp_method(operator.ne, 'ne')
+    gt = _comp_method(operator.gt, 'gt')
+    lt = _comp_method(operator.lt, 'lt')
+    ge = _comp_method(operator.ge, 'ge')
+    le = _comp_method(operator.le, 'le')
 
     #----------------------------------------------------------------------
     # Magic methods
@@ -423,7 +478,8 @@ class Panel(NDFrame):
         Invoked by bytes(df) in py3 only.
         Yields a bytestring in both py2/py3.
         """
-        return com.console_encode(self.__unicode__())
+        encoding = com.get_option("display.encoding")
+        return self.__unicode__().encode(encoding, 'replace')
 
     def __unicode__(self):
         """
@@ -435,17 +491,18 @@ class Panel(NDFrame):
         class_name = str(self.__class__)
 
         shape = self.shape
-        dims = 'Dimensions: %s' % ' x '.join([ "%d (%s)" % (s, a) for a,s in zip(self._AXIS_ORDERS,shape) ])
+        dims = u'Dimensions: %s' % ' x '.join(
+            ["%d (%s)" % (s, a) for a, s in zip(self._AXIS_ORDERS, shape)])
 
         def axis_pretty(a):
-            v = getattr(self,a)
+            v = getattr(self, a)
             if len(v) > 0:
-                return '%s axis: %s to %s' % (a.capitalize(),v[0],v[-1])
+                return u'%s axis: %s to %s' % (a.capitalize(), com.pprint_thing(v[0]), com.pprint_thing(v[-1]))
             else:
-                return '%s axis: None' % a.capitalize()
+                return u'%s axis: None' % a.capitalize()
 
-
-        output = '\n'.join([class_name, dims] + [axis_pretty(a) for a in self._AXIS_ORDERS])
+        output = '\n'.join(
+            [class_name, dims] + [axis_pretty(a) for a in self._AXIS_ORDERS])
         return output
 
     def __repr__(self):
@@ -457,10 +514,10 @@ class Panel(NDFrame):
         return str(self)
 
     def __iter__(self):
-        return iter(getattr(self,self._info_axis))
+        return iter(getattr(self, self._info_axis))
 
     def iteritems(self):
-        for h in getattr(self,self._info_axis):
+        for h in getattr(self, self._info_axis):
             yield h, self[h]
 
     # Name that won't get automatically converted to items by 2to3. items is
@@ -468,9 +525,7 @@ class Panel(NDFrame):
     iterkv = iteritems
 
     def _get_plane_axes(self, axis):
-        """
-
-        """
+        """ get my plane axes: these are already (as compared with higher level planes), as we are returning a DataFrame axes """
         axis = self._get_axis_name(axis)
 
         if axis == 'major_axis':
@@ -496,9 +551,8 @@ class Panel(NDFrame):
         return self._ix
 
     def _wrap_array(self, arr, axes, copy=False):
-        items, major, minor = axes
-        return self._constructor(arr, items=items, major_axis=major,
-                                 minor_axis=minor, copy=copy)
+        d = self._construct_axes_dict_from(self, axes, copy=copy)
+        return self._constructor(arr, **d)
 
     fromDict = from_dict
 
@@ -543,7 +597,7 @@ class Panel(NDFrame):
 
     # TODO: needed?
     def keys(self):
-        return list(self.items)
+        return list(getattr(self, self._info_axis))
 
     def _get_values(self):
         self._consolidate_inplace()
@@ -593,7 +647,7 @@ class Panel(NDFrame):
             otherwise a new object
         """
         # require an arg for each axis and the value
-        assert(len(args) == self._AXIS_LEN+1)
+        assert(len(args) == self._AXIS_LEN + 1)
 
         try:
             frame = self._get_item_cache(args[0])
@@ -601,12 +655,12 @@ class Panel(NDFrame):
             return self
         except KeyError:
             axes = self._expand_axes(args)
-            d    = dict([ (a,ax) for a,ax in zip(self._AXIS_ORDERS,axes) ])
-            d['copy'] = False
+            d = self._construct_axes_dict_from(self, axes, copy=False)
             result = self.reindex(**d)
-
-            likely_dtype = com._infer_dtype(args[-1])
-            made_bigger = not np.array_equal(axes[0], getattr(self,self._info_axis))
+            args  = list(args)
+            likely_dtype, args[-1] = _infer_dtype_from_scalar(args[-1])
+            made_bigger = not np.array_equal(
+                axes[0], getattr(self, self._info_axis))
             # how to make this logic simpler?
             if made_bigger:
                 com._possibly_cast_item(result, args[0], likely_dtype)
@@ -620,7 +674,7 @@ class Panel(NDFrame):
     def __getattr__(self, name):
         """After regular attribute access, try looking up the name of an item.
         This allows simpler access to items for interactive use."""
-        if name in getattr(self,self._info_axis):
+        if name in getattr(self, self._info_axis):
             return self[name]
         raise AttributeError("'%s' object has no attribute '%s'" %
                              (type(self).__name__, name))
@@ -632,13 +686,14 @@ class Panel(NDFrame):
     def __setitem__(self, key, value):
         shape = tuple(self.shape)
         if isinstance(value, self._constructor_sliced):
-            value = value.reindex(**self._construct_axes_dict_for_slice(self._AXIS_ORDERS[1:]))
+            value = value.reindex(
+                **self._construct_axes_dict_for_slice(self._AXIS_ORDERS[1:]))
             mat = value.values
         elif isinstance(value, np.ndarray):
             assert(value.shape == shape[1:])
             mat = np.asarray(value)
         elif np.isscalar(value):
-            dtype = _infer_dtype(value)
+            dtype, value = _infer_dtype_from_scalar(value)
             mat = np.empty(shape[1:], dtype=dtype)
             mat.fill(value)
         else:
@@ -736,21 +791,24 @@ class Panel(NDFrame):
 
         major = _mut_exclusive(major, major_axis)
         minor = _mut_exclusive(minor, minor_axis)
-        al    = self._AXIS_LEN
+        al = self._AXIS_LEN
 
         # only allowing multi-index on Panel (and not > dims)
         if (method is None and not self._is_mixed_type and al <= 3):
             items = kwargs.get('items')
             if com._count_not_none(items, major, minor) == 3:
-                return self._reindex_multi(items, major, minor)
+                try:
+                    return self._reindex_multi(items, major, minor)
+                except:
+                    pass
 
         if major is not None:
-            result = result._reindex_axis(major, method, al-2, copy)
+            result = result._reindex_axis(major, method, al - 2, copy)
 
         if minor is not None:
-            result = result._reindex_axis(minor, method, al-1, copy)
+            result = result._reindex_axis(minor, method, al - 1, copy)
 
-        for i, a in enumerate(self._AXIS_ORDERS[0:al-2]):
+        for i, a in enumerate(self._AXIS_ORDERS[0:al - 2]):
             a = kwargs.get(a)
             if a is not None:
                 result = result._reindex_axis(a, method, i, copy)
@@ -780,7 +838,7 @@ class Panel(NDFrame):
             indexer2 = range(len(new_minor))
 
         for i, ind in enumerate(indexer0):
-            com.take_2d_multi(values[ind], indexer1, indexer2,
+            com.take_2d_multi(values[ind], (indexer1, indexer2),
                               out=new_values[i])
 
         return Panel(new_values, items=new_items, major_axis=new_major,
@@ -829,8 +887,7 @@ class Panel(NDFrame):
         -------
         reindexed : Panel
         """
-        d = other._construct_axes_dict()
-        d['method'] = method
+        d = other._construct_axes_dict(method=method)
         return self.reindex(**d)
 
     def dropna(self, axis=0, how='any'):
@@ -874,12 +931,12 @@ class Panel(NDFrame):
         elif isinstance(other, DataFrame):
             return self._combine_frame(other, func, axis=axis)
         elif np.isscalar(other):
-            new_values = func(self.values, other)
-            d = self._construct_axes_dict()
-            return self._constructor(new_values, **d)
+            return self._combine_const(other, func)
 
-    def __neg__(self):
-        return -1 * self
+    def _combine_const(self, other, func):
+        new_values = func(self.values, other)
+        d = self._construct_axes_dict()
+        return self._constructor(new_values, **d)
 
     def _combine_frame(self, other, func, axis=0):
         index, columns = self._get_plane_axes(axis)
@@ -897,7 +954,7 @@ class Panel(NDFrame):
             new_values = new_values.swapaxes(0, 2)
 
         return self._constructor(new_values, self.items, self.major_axis,
-                     self.minor_axis)
+                                 self.minor_axis)
 
     def _combine_panel(self, other, func):
         items = self.items + other.items
@@ -951,23 +1008,11 @@ class Panel(NDFrame):
             new_data = self._data.fillna(value)
             return self._constructor(new_data)
 
-
     def ffill(self):
         return self.fillna(method='ffill')
 
     def bfill(self):
         return self.fillna(method='bfill')
-
-
-    add = _panel_arith_method(operator.add, 'add')
-    subtract = sub = _panel_arith_method(operator.sub, 'subtract')
-    multiply = mul = _panel_arith_method(operator.mul, 'multiply')
-
-    try:
-        divide = div = _panel_arith_method(operator.div, 'divide')
-    except AttributeError:  # pragma: no cover
-        # Python 3
-        divide = div = _panel_arith_method(operator.truediv, 'divide')
 
     def major_xs(self, key, copy=True):
         """
@@ -985,7 +1030,7 @@ class Panel(NDFrame):
         y : DataFrame
             index -> minor axis, columns -> items
         """
-        return self.xs(key, axis=self._AXIS_LEN-2, copy=copy)
+        return self.xs(key, axis=self._AXIS_LEN - 2, copy=copy)
 
     def minor_xs(self, key, copy=True):
         """
@@ -1003,7 +1048,7 @@ class Panel(NDFrame):
         y : DataFrame
             index -> major axis, columns -> items
         """
-        return self.xs(key, axis=self._AXIS_LEN-1, copy=copy)
+        return self.xs(key, axis=self._AXIS_LEN - 1, copy=copy)
 
     def xs(self, key, axis=1, copy=True):
         """
@@ -1108,7 +1153,8 @@ class Panel(NDFrame):
                 try:
                     kwargs[a] = args.pop(0)
                 except (IndexError):
-                    raise ValueError("not enough arguments specified to transpose!")
+                    raise ValueError(
+                        "not enough arguments specified to transpose!")
 
         axes = [self._get_axis_number(kwargs[a]) for a in self._AXIS_ORDERS]
 
@@ -1116,7 +1162,8 @@ class Panel(NDFrame):
         if len(axes) != len(set(axes)):
             raise ValueError('Must specify %s unique axes' % self._AXIS_LEN)
 
-        new_axes   = dict([ (a,self._get_axis(x)) for a, x in zip(self._AXIS_ORDERS,axes)])
+        new_axes = self._construct_axes_dict_from(
+            self, [self._get_axis(x) for x in axes])
         new_values = self.values.transpose(tuple(axes))
         if kwargs.get('copy') or (len(args) and args[-1]):
             new_values = new_values.copy()
@@ -1226,9 +1273,10 @@ class Panel(NDFrame):
         # do we have reduced dimensionalility?
         if self.ndim == result.ndim:
             return self._constructor(result, **self._construct_axes_dict())
-        elif self.ndim == result.ndim+1:
+        elif self.ndim == result.ndim + 1:
             return self._constructor_sliced(result, **self._extract_axes_for_slice(self, axes))
-        raise PandasError("invalid _wrap_result [self->%s] [result->%s]" % (self.ndim,result.ndim))
+        raise PandasError("invalid _wrap_result [self->%s] [result->%s]" %
+                          (self.ndim, result.ndim))
 
     def count(self, axis='major'):
         """
@@ -1249,56 +1297,6 @@ class Panel(NDFrame):
         result = mask.sum(axis=i)
 
         return self._wrap_result(result, axis)
-
-    @Substitution(desc='sum', outname='sum')
-    @Appender(_agg_doc)
-    def sum(self, axis='major', skipna=True):
-        return self._reduce(nanops.nansum, axis=axis, skipna=skipna)
-
-    @Substitution(desc='mean', outname='mean')
-    @Appender(_agg_doc)
-    def mean(self, axis='major', skipna=True):
-        return self._reduce(nanops.nanmean, axis=axis, skipna=skipna)
-
-    @Substitution(desc='unbiased variance', outname='variance')
-    @Appender(_agg_doc)
-    def var(self, axis='major', skipna=True):
-        return self._reduce(nanops.nanvar, axis=axis, skipna=skipna)
-
-    @Substitution(desc='unbiased standard deviation', outname='stdev')
-    @Appender(_agg_doc)
-    def std(self, axis='major', skipna=True):
-        return self.var(axis=axis, skipna=skipna).apply(np.sqrt)
-
-    @Substitution(desc='unbiased skewness', outname='skew')
-    @Appender(_agg_doc)
-    def skew(self, axis='major', skipna=True):
-        return self._reduce(nanops.nanskew, axis=axis, skipna=skipna)
-
-    @Substitution(desc='product', outname='prod')
-    @Appender(_agg_doc)
-    def prod(self, axis='major', skipna=True):
-        return self._reduce(nanops.nanprod, axis=axis, skipna=skipna)
-
-    @Substitution(desc='compounded percentage', outname='compounded')
-    @Appender(_agg_doc)
-    def compound(self, axis='major', skipna=True):
-        return (1 + self).prod(axis=axis, skipna=skipna) - 1
-
-    @Substitution(desc='median', outname='median')
-    @Appender(_agg_doc)
-    def median(self, axis='major', skipna=True):
-        return self._reduce(nanops.nanmedian, axis=axis, skipna=skipna)
-
-    @Substitution(desc='maximum', outname='maximum')
-    @Appender(_agg_doc)
-    def max(self, axis='major', skipna=True):
-        return self._reduce(nanops.nanmax, axis=axis, skipna=skipna)
-
-    @Substitution(desc='minimum', outname='minimum')
-    @Appender(_agg_doc)
-    def min(self, axis='major', skipna=True):
-        return self._reduce(nanops.nanmin, axis=axis, skipna=skipna)
 
     def shift(self, lags, axis='major'):
         """
@@ -1323,7 +1321,7 @@ class Panel(NDFrame):
             vslicer = slice(None, -lags)
             islicer = slice(lags, None)
         elif lags == 0:
-            vslicer = islicer =slice(None)
+            vslicer = islicer = slice(None)
         else:
             vslicer = slice(-lags, None)
             islicer = slice(None, lags)
@@ -1434,12 +1432,14 @@ class Panel(NDFrame):
             contain data in the same place.
         """
 
-        if not isinstance(other, Panel):
-            other = Panel(other)
+        if not isinstance(other, self._constructor):
+            other = self._constructor(other)
 
-        other = other.reindex(items=self.items)
+        axis = self._info_axis
+        axis_values = getattr(self, axis)
+        other = other.reindex(**{axis: axis_values})
 
-        for frame in self.items:
+        for frame in axis_values:
             self[frame].update(other[frame], join, overwrite, filter_func,
                                raise_conflict)
 
@@ -1460,12 +1460,12 @@ class Panel(NDFrame):
     @staticmethod
     def _extract_axes(self, data, axes, **kwargs):
         """ return a list of the axis indicies """
-        return [ self._extract_axis(self, data, axis=i, **kwargs) for i, a in enumerate(axes) ]
+        return [self._extract_axis(self, data, axis=i, **kwargs) for i, a in enumerate(axes)]
 
     @staticmethod
     def _extract_axes_for_slice(self, axes):
         """ return the slice dictionary for these axes """
-        return dict([ (self._AXIS_SLICEMAP[i], a) for i, a in zip(self._AXIS_ORDERS[self._AXIS_LEN-len(axes):],axes) ])
+        return dict([(self._AXIS_SLICEMAP[i], a) for i, a in zip(self._AXIS_ORDERS[self._AXIS_LEN - len(axes):], axes)])
 
     @staticmethod
     def _prep_ndarray(self, values, copy=True):
@@ -1504,10 +1504,12 @@ class Panel(NDFrame):
             else:
                 adj_frames[k] = v
 
-        axes      = self._AXIS_ORDERS[1:]
-        axes_dict = dict([ (a,ax) for a,ax in zip(axes,self._extract_axes(self, adj_frames, axes, intersect=intersect)) ])
+        axes = self._AXIS_ORDERS[1:]
+        axes_dict = dict([(a, ax) for a, ax in zip(axes, self._extract_axes(
+            self, adj_frames, axes, intersect=intersect))])
 
-        reindex_dict = dict([ (self._AXIS_SLICEMAP[a],axes_dict[a]) for a in axes ])
+        reindex_dict = dict(
+            [(self._AXIS_SLICEMAP[a], axes_dict[a]) for a in axes])
         reindex_dict['copy'] = False
         for key, frame in adj_frames.iteritems():
             if frame is not None:
@@ -1558,6 +1560,124 @@ class Panel(NDFrame):
 
         return _ensure_index(index)
 
+    @classmethod
+    def _add_aggregate_operations(cls):
+        """ add the operations to the cls; evaluate the doc strings again """
+
+        # doc strings substitors
+        _agg_doc = """
+Wrapper method for %s
+
+Parameters
+----------
+other : """ + "%s or %s" % (cls._constructor_sliced.__name__, cls.__name__) + """
+axis : {""" + ', '.join(cls._AXIS_ORDERS) + "}" + """
+Axis to broadcast over
+
+Returns
+-------
+""" + cls.__name__ + "\n"
+
+        def _panel_arith_method(op, name):
+            @Substitution(op)
+            @Appender(_agg_doc)
+            def f(self, other, axis=0):
+                return self._combine(other, op, axis=axis)
+            f.__name__ = name
+            return f
+
+        cls.add = _panel_arith_method(operator.add, 'add')
+        cls.subtract = cls.sub = _panel_arith_method(operator.sub, 'subtract')
+        cls.multiply = cls.mul = _panel_arith_method(operator.mul, 'multiply')
+
+        try:
+            cls.divide = cls.div = _panel_arith_method(operator.div, 'divide')
+        except AttributeError:  # pragma: no cover
+            # Python 3
+            cls.divide = cls.div = _panel_arith_method(
+                operator.truediv, 'divide')
+
+        _agg_doc = """
+Return %(desc)s over requested axis
+
+Parameters
+----------
+axis : {""" + ', '.join(cls._AXIS_ORDERS) + "} or {" + ', '.join([str(i) for i in range(cls._AXIS_LEN)]) + """}
+skipna : boolean, default True
+    Exclude NA/null values. If an entire row/column is NA, the result
+    will be NA
+
+Returns
+-------
+%(outname)s : """ + cls._constructor_sliced.__name__ + "\n"
+
+        _na_info = """
+
+NA/null values are %s.
+If all values are NA, result will be NA"""
+
+        @Substitution(desc='sum', outname='sum')
+        @Appender(_agg_doc)
+        def sum(self, axis='major', skipna=True):
+            return self._reduce(nanops.nansum, axis=axis, skipna=skipna)
+        cls.sum = sum
+
+        @Substitution(desc='mean', outname='mean')
+        @Appender(_agg_doc)
+        def mean(self, axis='major', skipna=True):
+            return self._reduce(nanops.nanmean, axis=axis, skipna=skipna)
+        cls.mean = mean
+
+        @Substitution(desc='unbiased variance', outname='variance')
+        @Appender(_agg_doc)
+        def var(self, axis='major', skipna=True):
+            return self._reduce(nanops.nanvar, axis=axis, skipna=skipna)
+        cls.var = var
+
+        @Substitution(desc='unbiased standard deviation', outname='stdev')
+        @Appender(_agg_doc)
+        def std(self, axis='major', skipna=True):
+            return self.var(axis=axis, skipna=skipna).apply(np.sqrt)
+        cls.std = std
+
+        @Substitution(desc='unbiased skewness', outname='skew')
+        @Appender(_agg_doc)
+        def skew(self, axis='major', skipna=True):
+            return self._reduce(nanops.nanskew, axis=axis, skipna=skipna)
+        cls.skew = skew
+
+        @Substitution(desc='product', outname='prod')
+        @Appender(_agg_doc)
+        def prod(self, axis='major', skipna=True):
+            return self._reduce(nanops.nanprod, axis=axis, skipna=skipna)
+        cls.prod = prod
+
+        @Substitution(desc='compounded percentage', outname='compounded')
+        @Appender(_agg_doc)
+        def compound(self, axis='major', skipna=True):
+            return (1 + self).prod(axis=axis, skipna=skipna) - 1
+        cls.compound = compound
+
+        @Substitution(desc='median', outname='median')
+        @Appender(_agg_doc)
+        def median(self, axis='major', skipna=True):
+            return self._reduce(nanops.nanmedian, axis=axis, skipna=skipna)
+        cls.median = median
+
+        @Substitution(desc='maximum', outname='maximum')
+        @Appender(_agg_doc)
+        def max(self, axis='major', skipna=True):
+            return self._reduce(nanops.nanmax, axis=axis, skipna=skipna)
+        cls.max = max
+
+        @Substitution(desc='minimum', outname='minimum')
+        @Appender(_agg_doc)
+        def min(self, axis='major', skipna=True):
+            return self._reduce(nanops.nanmin, axis=axis, skipna=skipna)
+        cls.min = min
+
+Panel._add_aggregate_operations()
+
 WidePanel = Panel
 LongPanel = DataFrame
 
@@ -1573,8 +1693,8 @@ def install_ipython_completers():  # pragma: no cover
 
     @complete_object.when_type(Panel)
     def complete_dataframe(obj, prev_completions):
-        return prev_completions + [c for c in obj.items \
-                    if isinstance(c, basestring) and py3compat.isidentifier(c)]
+        return prev_completions + [c for c in obj.keys()
+                                   if isinstance(c, basestring) and py3compat.isidentifier(c)]
 
 # Importing IPython brings in about 200 modules, so we want to avoid it unless
 # we're in IPython (when those modules are loaded anyway).

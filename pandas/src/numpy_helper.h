@@ -54,7 +54,6 @@ get_datetime64_value(PyObject* obj) {
 
 }
 
-
 PANDAS_INLINE int
 is_integer_object(PyObject* obj) {
   return (!PyBool_Check(obj)) && PyArray_IsIntegerScalar(obj);
@@ -83,6 +82,11 @@ is_string_object(PyObject* obj) {
 PANDAS_INLINE int
 is_datetime64_object(PyObject *obj) {
   return PyArray_IsScalar(obj, Datetime);
+}
+
+PANDAS_INLINE int
+is_timedelta64_object(PyObject *obj) {
+  return PyArray_IsScalar(obj, Timedelta);
 }
 
 PANDAS_INLINE int
@@ -167,6 +171,10 @@ void transfer_object_column(char *dst, char *src, size_t stride,
 
 void set_array_owndata(PyArrayObject *ao) {
     ao->flags |= NPY_OWNDATA;
+}
+
+void set_array_not_contiguous(PyArrayObject *ao) {
+    ao->flags &= ~(NPY_C_CONTIGUOUS | NPY_F_CONTIGUOUS);
 }
 
 

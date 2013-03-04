@@ -9,11 +9,9 @@ import numpy as np
 import pandas.tslib as tslib
 import pandas.lib as lib
 import pandas.algos as _algos
-import pandas.hashtable as _hash
 import pandas.index as _index
 from pandas.lib import Timestamp
 
-from pandas.core.common import ndtake
 from pandas.util.decorators import cache_readonly
 import pandas.core.common as com
 from pandas.util import py3compat
@@ -87,6 +85,7 @@ class Index(np.ndarray):
     _engine_type = _index.ObjectEngine
 
     def __new__(cls, data, dtype=None, copy=False, name=None):
+        from pandas.tseries.period import PeriodIndex
         if isinstance(data, np.ndarray):
             if issubclass(data.dtype.type, np.datetime64):
                 from pandas.tseries.index import DatetimeIndex
@@ -101,6 +100,8 @@ class Index(np.ndarray):
                     data = np.array(data, dtype=dtype, copy=copy)
                 except TypeError:
                     pass
+            elif isinstance(data, PeriodIndex):
+                return PeriodIndex(data, copy=copy, name=name)
 
             if issubclass(data.dtype.type, np.integer):
                 return Int64Index(data, copy=copy, name=name)
@@ -119,13 +120,12 @@ class Index(np.ndarray):
                 return Int64Index(subarr.astype('i8'), name=name)
             elif inferred != 'string':
                 if (inferred.startswith('datetime') or
-                    tslib.is_timestamp_array(subarr)):
+                        tslib.is_timestamp_array(subarr)):
                     from pandas.tseries.index import DatetimeIndex
                     return DatetimeIndex(subarr, copy=copy, name=name)
 
-                if lib.is_period_array(subarr):
-                    from pandas.tseries.period import PeriodIndex
-                    return PeriodIndex(subarr, name=name)
+            if lib.is_period_array(subarr):
+                return PeriodIndex(subarr, name=name)
 
         subarr = subarr.view(cls)
         subarr.name = name
@@ -140,12 +140,6 @@ class Index(np.ndarray):
 
     def _shallow_copy(self):
         return self.view()
-
-    def __repr__(self):
-        if len(self) > 6 and len(self) > np.get_printoptions()['threshold']:
-            data = self[:3].tolist() + ["..."] + self[-3:].tolist()
-        else:
-            data = self
 
     def __str__(self):
         """
@@ -166,7 +160,8 @@ class Index(np.ndarray):
         Invoked by bytes(df) in py3 only.
         Yields a bytestring in both py2/py3.
         """
-        return com.console_encode(self.__unicode__())
+        encoding = com.get_option("display.encoding")
+        return self.__unicode__().encode(encoding, 'replace')
 
     def __unicode__(self):
         """
@@ -179,7 +174,7 @@ class Index(np.ndarray):
         else:
             data = self
 
-        prepr = com.pprint_thing(data)
+        prepr = com.pprint_thing(data, escape_chars=('\t', '\r', '\n'))
         return '%s(%s, dtype=%s)' % (type(self).__name__, prepr, self.dtype)
 
     def __repr__(self):
@@ -429,7 +424,8 @@ class Index(np.ndarray):
 
         header = []
         if name:
-            header.append(com.pprint_thing(self.name)
+            header.append(com.pprint_thing(self.name,
+                                           escape_chars=('\t', '\r', '\n'))
                           if self.name is not None else '')
 
         if formatter is not None:
@@ -450,7 +446,8 @@ class Index(np.ndarray):
             values = lib.maybe_convert_objects(values, safe=1)
 
         if values.dtype == np.object_:
-            result = [com.pprint_thing(x) for x in values]
+            result = [com.pprint_thing(x, escape_chars=('\t', '\r', '\n'))
+                      for x in values]
         else:
             result = _trim_front(format_array(values, None, justify='left'))
         return header + result
@@ -610,7 +607,8 @@ class Index(np.ndarray):
             indexer = (indexer == -1).nonzero()[0]
 
             if len(indexer) > 0:
-                other_diff = ndtake(other.values, indexer)
+                other_diff = com.take_nd(other.values, indexer,
+                                         allow_fill=False)
                 result = com._concat_compat((self.values, other_diff))
                 try:
                     result.sort()
@@ -754,6 +752,22 @@ class Index(np.ndarray):
         know what you're doing
         """
         self._engine.set_value(arr, key, value)
+
+    def get_level_values(self, level):
+        """
+        Return vector of label values for requested level, equal to the length
+        of the index
+
+        Parameters
+        ----------
+        level : int
+
+        Returns
+        -------
+        values : ndarray
+        """
+        num = self._get_level_number(level)
+        return self
 
     def get_indexer(self, target, method=None, limit=None):
         """
@@ -1023,7 +1037,8 @@ class Index(np.ndarray):
             rev_indexer = lib.get_reverse_indexer(left_lev_indexer,
                                                   len(old_level))
 
-            new_lev_labels = ndtake(rev_indexer, left.labels[level])
+            new_lev_labels = com.take_nd(rev_indexer, left.labels[level],
+                                         allow_fill=False)
             omit_mask = new_lev_labels != -1
 
             new_labels = list(left.labels)
@@ -1043,8 +1058,9 @@ class Index(np.ndarray):
             left_indexer = None
 
         if right_lev_indexer is not None:
-            right_indexer = ndtake(right_lev_indexer,
-                                   join_index.labels[level])
+            right_indexer = com.take_nd(right_lev_indexer,
+                                        join_index.labels[level],
+                                        allow_fill=False)
         else:
             right_indexer = join_index.labels[level]
 
@@ -1103,6 +1119,30 @@ class Index(np.ndarray):
         name = self.name if self.name == other.name else None
         return Index(joined, name=name)
 
+    def slice_indexer(self, start=None, end=None, step=None):
+        """
+        For an ordered Index, compute the slice indexer for input labels and
+        step
+
+        Parameters
+        ----------
+        start : label, default None
+            If None, defaults to the beginning
+        end : label, default None
+            If None, defaults to the end
+        step : int, default None 
+
+        Returns
+        -------
+        indexer : ndarray or slice
+
+        Notes
+        -----
+        This function assumes that the data is sorted, so use at your own peril
+        """
+        start_slice, end_slice = self.slice_locs(start, end)
+        return slice(start_slice, end_slice, step)
+
     def slice_locs(self, start=None, end=None):
         """
         For an ordered Index, compute the slice locations for input labels
@@ -1111,27 +1151,27 @@ class Index(np.ndarray):
         ----------
         start : label, default None
             If None, defaults to the beginning
-        end : label
+        end : label, default None
             If None, defaults to the end
 
         Returns
         -------
-        (begin, end) : (int, int)
+        (start, end) : (int, int)
 
         Notes
         -----
         This function assumes that the data is sorted, so use at your own peril
         """
         if start is None:
-            beg_slice = 0
+            start_slice = 0
         else:
             try:
-                beg_slice = self.get_loc(start)
-                if isinstance(beg_slice, slice):
-                    beg_slice = beg_slice.start
+                start_slice = self.get_loc(start)
+                if isinstance(start_slice, slice):
+                    start_slice = start_slice.start
             except KeyError:
                 if self.is_monotonic:
-                    beg_slice = self.searchsorted(start, side='left')
+                    start_slice = self.searchsorted(start, side='left')
                 else:
                     raise
 
@@ -1150,7 +1190,7 @@ class Index(np.ndarray):
                 else:
                     raise
 
-        return beg_slice, end_slice
+        return start_slice, end_slice
 
     def delete(self, loc):
         """
@@ -1160,7 +1200,7 @@ class Index(np.ndarray):
         -------
         new_index : Index
         """
-        arr = np.delete(np.asarray(self), loc)
+        arr = np.delete(self.values, loc)
         return Index(arr)
 
     def insert(self, loc, item):
@@ -1302,7 +1342,8 @@ class MultiIndex(Index):
 
     def __new__(cls, levels=None, labels=None, sortorder=None, names=None):
         if len(levels) != len(labels):
-            raise AssertionError('Length of levels and labels must be the same')
+            raise AssertionError(
+                'Length of levels and labels must be the same')
         if len(levels) == 0:
             raise Exception('Must pass non-zero number of levels/labels')
 
@@ -1384,7 +1425,8 @@ class MultiIndex(Index):
         Invoked by bytes(df) in py3 only.
         Yields a bytestring in both py2/py3.
         """
-        return com.console_encode(self.__unicode__())
+        encoding = com.get_option("display.encoding")
+        return self.__unicode__().encode(encoding, 'replace')
 
     def __unicode__(self):
         """
@@ -1403,7 +1445,7 @@ class MultiIndex(Index):
         else:
             values = self.values
 
-        summary = com.pprint_thing(values)
+        summary = com.pprint_thing(values, escape_chars=('\t', '\r', '\n'))
 
         np.set_printoptions(threshold=options['threshold'])
 
@@ -1468,7 +1510,7 @@ class MultiIndex(Index):
 
             values = []
             for lev, lab in zip(self.levels, self.labels):
-                taken = ndtake(lev.values, lab)
+                taken = com.take_1d(lev.values, lab)
                 # Need to box timestamps, etc.
                 if hasattr(lev, '_box_values'):
                     taken = lev._box_values(taken)
@@ -1558,7 +1600,7 @@ class MultiIndex(Index):
         values : ndarray
         """
         num = self._get_level_number(level)
-        unique_vals = self.levels[num].values
+        unique_vals = self.levels[num]  # .values
         labels = self.labels[num]
         return unique_vals.take(labels)
 
@@ -1573,7 +1615,8 @@ class MultiIndex(Index):
                 formatted = lev.take(lab).format(formatter=formatter)
             else:
                 # weird all NA case
-                formatted = [com.pprint_thing(x) for x in com.take_1d(lev.values, lab)]
+                formatted = [com.pprint_thing(x, escape_chars=('\t', '\r', '\n'))
+                             for x in com.take_1d(lev.values, lab)]
             stringified_levels.append(formatted)
 
         result_levels = []
@@ -1581,13 +1624,14 @@ class MultiIndex(Index):
             level = []
 
             if names:
-                level.append(com.pprint_thing(name) if name is not None else '')
+                level.append(com.pprint_thing(name, escape_chars=('\t', '\r', '\n'))
+                             if name is not None else '')
 
             level.extend(np.array(lev, dtype=object))
             result_levels.append(level)
 
         if sparsify is None:
-            sparsify = get_option("print.multi_sparse")
+            sparsify = get_option("display.multi_sparse")
 
         if sparsify:
             # little bit of a kludge job for #1217
@@ -1880,6 +1924,11 @@ class MultiIndex(Index):
         """
         Swap level i with level j. Do not change the ordering of anything
 
+        Parameters
+        ----------
+        i, j : int, string (can be mixed)
+            Level of index to be swapped. Can pass level name as string.
+
         Returns
         -------
         swapped : MultiIndex
@@ -2083,7 +2132,7 @@ class MultiIndex(Index):
 
         Returns
         -------
-        (begin, end) : (int, int)
+        (start, end) : (int, int)
 
         Notes
         -----
@@ -2322,8 +2371,10 @@ class MultiIndex(Index):
             return False
 
         for i in xrange(self.nlevels):
-            svalues = ndtake(self.levels[i].values, self.labels[i])
-            ovalues = ndtake(other.levels[i].values, other.labels[i])
+            svalues = com.take_nd(self.levels[i].values, self.labels[i],
+                                  allow_fill=False)
+            ovalues = com.take_nd(other.levels[i].values, other.labels[i],
+                                  allow_fill=False)
             if not np.array_equal(svalues, ovalues):
                 return False
 

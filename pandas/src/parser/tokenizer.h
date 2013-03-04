@@ -1,6 +1,9 @@
 /*
 
-Copyright (c) 2012, Lambda Foundry, Inc.
+Copyright (c) 2012, Lambda Foundry, Inc., except where noted
+
+Incorporates components of WarrenWeckesser/textreader, licensed under 3-clause
+BSD
 
 See LICENSE for the license
 
@@ -24,7 +27,7 @@ See LICENSE for the license
 #define ERROR_MINUS_SIGN     4
 
 #if defined(_MSC_VER)
-#include "../ms_stdint.h"
+#include "../headers/ms_stdint.h"
 #else
 #include <stdint.h>
 #endif
@@ -85,7 +88,7 @@ See LICENSE for the license
 #define ERROR_NO_DATA                  23
 
 
-/* #define VERBOSE */
+// #define VERBOSE
 
 #if defined(VERBOSE)
 #define TRACE(X) printf X;
@@ -169,6 +172,7 @@ typedef struct parser_t {
     int delim_whitespace;       /* delimit by consuming space/tabs instead */
     char quotechar;             /* quote character */
     char escapechar;            /* escape character */
+    char lineterminator;
     int skipinitialspace;       /* ignore spaces following delimiter? */
     int quoting;                /* style of quoting to write */
 

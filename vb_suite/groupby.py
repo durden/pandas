@@ -55,9 +55,10 @@ labels = np.random.randint(0, 100, size=1000)
 df = DataFrame(randn(1000, 1000))
 """
 
-groupby_frame_cython_many_columns = Benchmark('df.groupby(labels).sum()', setup,
-                                              start_date=datetime(2011, 8, 1),
-                                              logy=True)
+groupby_frame_cython_many_columns = Benchmark(
+    'df.groupby(labels).sum()', setup,
+    start_date=datetime(2011, 8, 1),
+    logy=True)
 
 #----------------------------------------------------------------------
 # single key, long, integer key
@@ -122,6 +123,18 @@ s = Series(np.random.randint(0, 1000, size=100000))
 series_value_counts_int64 = Benchmark('s.value_counts()', setup,
                                       start_date=datetime(2011, 10, 21))
 
+# value_counts on lots of strings
+
+setup = common_setup + """
+K = 1000
+N = 100000
+uniques = np.array([rands(10) for x in xrange(K)], dtype='O')
+s = Series(np.tile(uniques, N // K))
+"""
+
+series_value_counts_strings = Benchmark('s.value_counts()', setup,
+                                        start_date=datetime(2011, 10, 21))
+
 #----------------------------------------------------------------------
 # pivot_table
 
@@ -164,14 +177,23 @@ labels = np.arange(10000).repeat(10)
 data = Series(randn(len(labels)))
 data[::3] = np.nan
 data[1::3] = np.nan
+data2 = Series(randn(len(labels)),dtype='float32')
+data2[::3] = np.nan
+data2[1::3] = np.nan
 labels = labels.take(np.random.permutation(len(labels)))
 """
 
 groupby_first = Benchmark('data.groupby(labels).first()', setup,
                           start_date=datetime(2012, 5, 1))
 
+groupby_first_float32 = Benchmark('data2.groupby(labels).first()', setup,
+                          start_date=datetime(2013, 1, 1))
+
 groupby_last = Benchmark('data.groupby(labels).last()', setup,
-                          start_date=datetime(2012, 5, 1))
+                         start_date=datetime(2012, 5, 1))
+
+groupby_last_float32 = Benchmark('data2.groupby(labels).last()', setup,
+                         start_date=datetime(2013, 1, 1))
 
 
 #----------------------------------------------------------------------
@@ -233,7 +255,7 @@ df = DataFrame({'key': labels,
                 'value1': randn(N),
                 'value2': ['foo', 'bar', 'baz', 'qux'] * (N / 4)})
 def f(g):
-    return g
+    return 1
 """
 
 groupby_frame_apply_overhead = Benchmark("df.groupby('key').apply(f)", setup,
@@ -241,3 +263,13 @@ groupby_frame_apply_overhead = Benchmark("df.groupby('key').apply(f)", setup,
 
 groupbym_frame_apply = Benchmark("df.groupby(['key', 'key2']).apply(f)", setup,
                                  start_date=datetime(2011, 10, 1))
+
+#----------------------------------------------------------------------
+# Sum booleans #2692
+
+setup = common_setup + """
+N = 500
+df = DataFrame({'ii':range(N),'bb':[True for x in range(N)]})
+"""
+
+groupby_sum_booleans = Benchmark("df.groupby('ii').sum()", setup)

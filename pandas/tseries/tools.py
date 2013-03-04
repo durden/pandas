@@ -16,7 +16,7 @@ try:
 
     # raise exception if dateutil 2.0 install on 2.x platform
     if (sys.version_info[0] == 2 and
-        dateutil.__version__ == '2.0'):  # pragma: no cover
+            dateutil.__version__ == '2.0'):  # pragma: no cover
         raise Exception('dateutil 2.0 incompatible with Python 2.x, you must '
                         'install version 1.5 or 2.1+!')
 except ImportError:  # pragma: no cover
@@ -48,7 +48,8 @@ def _maybe_get_tz(tz):
     return tz
 
 
-def to_datetime(arg, errors='ignore', dayfirst=False, utc=None, box=True):
+def to_datetime(arg, errors='ignore', dayfirst=False, utc=None, box=True,
+                format=None):
     """
     Convert argument to datetime
 
@@ -72,8 +73,11 @@ def to_datetime(arg, errors='ignore', dayfirst=False, utc=None, box=True):
         arg = com._ensure_object(arg)
 
         try:
-            result = tslib.array_to_datetime(arg, raise_=errors == 'raise',
-                                             utc=utc, dayfirst=dayfirst)
+            if format is not None:
+                result = tslib.array_strptime(arg, format)
+            else:
+                result = tslib.array_to_datetime(arg, raise_=errors == 'raise',
+                                                 utc=utc, dayfirst=dayfirst)
             if com.is_datetime64_dtype(result) and box:
                 result = DatetimeIndex(result, tz='utc' if utc else None)
             return result
@@ -89,7 +93,9 @@ def to_datetime(arg, errors='ignore', dayfirst=False, utc=None, box=True):
     elif isinstance(arg, datetime):
         return arg
     elif isinstance(arg, Series):
-        values = _convert_f(arg.values)
+        values = arg.values
+        if not com.is_datetime64_dtype(values):
+            values = _convert_f(values)
         return Series(values, index=arg.index, name=arg.name)
     elif isinstance(arg, (np.ndarray, list)):
         if isinstance(arg, list):
@@ -116,7 +122,8 @@ def to_datetime(arg, errors='ignore', dayfirst=False, utc=None, box=True):
     try:
         if not arg:
             return arg
-        return parse(arg, dayfirst=dayfirst)
+        default = datetime(1, 1, 1)
+        return parse(arg, dayfirst=dayfirst, default=default)
     except Exception:
         if errors == 'raise':
             raise
@@ -166,7 +173,7 @@ def parse_time_string(arg, freq=None, dayfirst=None, yearfirst=None):
     arg = arg.upper()
 
     default = datetime(1, 1, 1).replace(hour=0, minute=0,
-                                      second=0, microsecond=0)
+                                        second=0, microsecond=0)
 
     # special handling for possibilities eg, 2Q2005, 2Q05, 2005Q1, 05Q1
     if len(arg) in [4, 6]:
@@ -224,9 +231,9 @@ def parse_time_string(arg, freq=None, dayfirst=None, yearfirst=None):
         return mresult
 
     if dayfirst is None:
-        dayfirst = get_option("print.date_dayfirst")
+        dayfirst = get_option("display.date_dayfirst")
     if yearfirst is None:
-        yearfirst = get_option("print.date_yearfirst")
+        yearfirst = get_option("display.date_yearfirst")
 
     try:
         parsed, reso = dateutil_parse(arg, default, dayfirst=dayfirst,
@@ -239,14 +246,18 @@ def parse_time_string(arg, freq=None, dayfirst=None, yearfirst=None):
 
     return parsed, parsed, reso  # datetime, resolution
 
+
 def dateutil_parse(timestr, default,
                    ignoretz=False, tzinfos=None,
                    **kwargs):
     """ lifted from dateutil to get resolution"""
+    from dateutil import tz
+    import time
+
     res = DEFAULTPARSER._parse(StringIO(timestr), **kwargs)
 
     if res is None:
-        raise ValueError, "unknown string format"
+        raise ValueError("unknown string format")
 
     repl = {}
     for attr in ["year", "month", "day", "hour",
@@ -260,7 +271,7 @@ def dateutil_parse(timestr, default,
 
     ret = default.replace(**repl)
     if res.weekday is not None and not res.day:
-        ret = ret+relativedelta.relativedelta(weekday=res.weekday)
+        ret = ret + relativedelta.relativedelta(weekday=res.weekday)
     if not ignoretz:
         if callable(tzinfos) or tzinfos and res.tzname in tzinfos:
             if callable(tzinfos):
@@ -274,8 +285,8 @@ def dateutil_parse(timestr, default,
             elif isinstance(tzdata, int):
                 tzinfo = tz.tzoffset(res.tzname, tzdata)
             else:
-                raise ValueError, "offset must be tzinfo subclass, " \
-                                  "tz string, or int offset"
+                raise ValueError("offset must be tzinfo subclass, "
+                                 "tz string, or int offset")
             ret = ret.replace(tzinfo=tzinfo)
         elif res.tzname and res.tzname in time.tzname:
             ret = ret.replace(tzinfo=tz.tzlocal())
@@ -284,6 +295,7 @@ def dateutil_parse(timestr, default,
         elif res.tzoffset:
             ret = ret.replace(tzinfo=tz.tzoffset(res.tzname, res.tzoffset))
     return ret, reso
+
 
 def _attempt_monthly(val):
     pats = ['%Y-%m', '%m-%Y', '%b %Y', '%b-%Y']

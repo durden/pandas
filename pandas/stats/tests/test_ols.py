@@ -10,6 +10,7 @@ from datetime import datetime
 import unittest
 import nose
 import numpy as np
+from numpy.testing.decorators import slow
 
 from pandas import date_range, bdate_range
 from pandas.core.panel import Panel
@@ -32,9 +33,11 @@ except ImportError:
     except ImportError:
         _have_statsmodels = False
 
+
 def _check_repr(obj):
     repr(obj)
     str(obj)
+
 
 def _compare_ols_results(model1, model2):
     assert(type(model1) == type(model2))
@@ -44,13 +47,18 @@ def _compare_ols_results(model1, model2):
     else:
         _compare_fullsample_ols(model1, model2)
 
+
 def _compare_fullsample_ols(model1, model2):
     assert_series_equal(model1.beta, model2.beta)
+
 
 def _compare_moving_ols(model1, model2):
     assert_frame_equal(model1.beta, model2.beta)
 
+
 class TestOLS(BaseTest):
+
+    _multiprocess_can_split_ = True
 
     # TODO: Add tests for OLS y predict
     # TODO: Right now we just check for consistency between full-sample and
@@ -69,16 +77,23 @@ class TestOLS(BaseTest):
         if not _have_statsmodels:
             raise nose.SkipTest
 
-    def testOLSWithDatasets(self):
+    def testOLSWithDatasets_ccard(self):
         self.checkDataSet(sm.datasets.ccard.load(), skip_moving=True)
         self.checkDataSet(sm.datasets.cpunish.load(), skip_moving=True)
         self.checkDataSet(sm.datasets.longley.load(), skip_moving=True)
         self.checkDataSet(sm.datasets.stackloss.load(), skip_moving=True)
+
+    @slow
+    def testOLSWithDatasets_copper(self):
         self.checkDataSet(sm.datasets.copper.load())
+
+    @slow
+    def testOLSWithDatasets_scotland(self):
         self.checkDataSet(sm.datasets.scotland.load())
 
         # degenerate case fails on some platforms
-        # self.checkDataSet(datasets.ccard.load(), 39, 49) # one col in X all 0s
+        # self.checkDataSet(datasets.ccard.load(), 39, 49) # one col in X all
+        # 0s
 
     def testWLS(self):
         # WLS centered SS changed (fixed) in 0.5.0
@@ -96,7 +111,7 @@ class TestOLS(BaseTest):
         self._check_wls(X, Y, weights)
 
     def _check_wls(self, x, y, weights):
-        result = ols(y=y, x=x, weights=1/weights)
+        result = ols(y=y, x=x, weights=1 / weights)
 
         combined = x.copy()
         combined['__y__'] = y
@@ -107,7 +122,7 @@ class TestOLS(BaseTest):
         aweights = combined.pop('__weights__').values
         exog = sm.add_constant(combined.values, prepend=False)
 
-        sm_result = sm.WLS(endog, exog, weights=1/aweights).fit()
+        sm_result = sm.WLS(endog, exog, weights=1 / aweights).fit()
 
         assert_almost_equal(sm_result.params, result._beta_raw)
         assert_almost_equal(sm_result.resid, result._resid_raw)
@@ -116,8 +131,8 @@ class TestOLS(BaseTest):
         self.checkMovingOLS('expanding', x, y, weights=weights)
 
     def checkDataSet(self, dataset, start=None, end=None, skip_moving=False):
-        exog = dataset.exog[start : end]
-        endog = dataset.endog[start : end]
+        exog = dataset.exog[start: end]
+        endog = dataset.endog[start: end]
         x = DataFrame(exog, index=np.arange(exog.shape[0]),
                       columns=np.arange(exog.shape[1]))
         y = Series(endog, index=np.arange(len(endog)))
@@ -232,7 +247,11 @@ class TestOLS(BaseTest):
         model = ols(y=df[0], x=df[1])
         summary = repr(model)
 
+
 class TestOLSMisc(unittest.TestCase):
+
+    _multiprocess_can_split_ = True
+
     '''
     For test coverage with faux data
     '''
@@ -311,7 +330,7 @@ class TestOLSMisc(unittest.TestCase):
         x3 = x2 + 10
         pred3 = model1.predict(x=x3)
         x3['intercept'] = 1.
-        x3 = x3.reindex(columns = model1.beta.index)
+        x3 = x3.reindex(columns=model1.beta.index)
         expected = Series(np.dot(x3.values, model1.beta.values), x3.index)
         assert_series_equal(expected, pred3)
 
@@ -320,13 +339,13 @@ class TestOLSMisc(unittest.TestCase):
         assert_series_equal(Series(0., pred4.index), pred4)
 
     def test_predict_longer_exog(self):
-        exogenous = {"1998": "4760","1999": "5904","2000": "4504",
-                     "2001": "9808","2002": "4241","2003": "4086",
-                     "2004": "4687","2005": "7686","2006": "3740",
-                     "2007": "3075","2008": "3753","2009": "4679",
-                     "2010": "5468","2011": "7154","2012": "4292",
-                     "2013": "4283","2014": "4595","2015": "9194",
-                     "2016": "4221","2017": "4520"}
+        exogenous = {"1998": "4760", "1999": "5904", "2000": "4504",
+                     "2001": "9808", "2002": "4241", "2003": "4086",
+                     "2004": "4687", "2005": "7686", "2006": "3740",
+                     "2007": "3075", "2008": "3753", "2009": "4679",
+                     "2010": "5468", "2011": "7154", "2012": "4292",
+                     "2013": "4283", "2014": "4595", "2015": "9194",
+                     "2016": "4221", "2017": "4520"}
         endogenous = {"1998": "691", "1999": "1580", "2000": "80",
                       "2001": "1450", "2002": "555", "2003": "956",
                       "2004": "877", "2005": "614", "2006": "468",
@@ -353,7 +372,7 @@ class TestOLSMisc(unittest.TestCase):
         y = tm.makeTimeSeries()
         x = tm.makeTimeSeries()
         model = ols(y=y, x=x)
-        expected = ols(y=y, x={'x' : x})
+        expected = ols(y=y, x={'x': x})
         assert_series_equal(model.beta, expected.beta)
 
     def test_various_attributes(self):
@@ -377,13 +396,13 @@ class TestOLSMisc(unittest.TestCase):
         df2 = tm.makeTimeDataFrame().ix[:, ['B', 'C', 'D']]
         y = tm.makeTimeSeries()
 
-        data = {'foo' : df1, 'bar' : df2}
+        data = {'foo': df1, 'bar': df2}
         self.assertRaises(Exception, ols, y=y, x=data)
 
     def test_plm_ctor(self):
         y = tm.makeTimeDataFrame()
-        x = {'a' : tm.makeTimeDataFrame(),
-             'b' : tm.makeTimeDataFrame()}
+        x = {'a': tm.makeTimeDataFrame(),
+             'b': tm.makeTimeDataFrame()}
 
         model = ols(y=y, x=x, intercept=False)
         model.summary
@@ -393,8 +412,8 @@ class TestOLSMisc(unittest.TestCase):
 
     def test_plm_attrs(self):
         y = tm.makeTimeDataFrame()
-        x = {'a' : tm.makeTimeDataFrame(),
-             'b' : tm.makeTimeDataFrame()}
+        x = {'a': tm.makeTimeDataFrame(),
+             'b': tm.makeTimeDataFrame()}
 
         rmodel = ols(y=y, x=x, window=10)
         model = ols(y=y, x=x)
@@ -403,16 +422,16 @@ class TestOLSMisc(unittest.TestCase):
 
     def test_plm_lagged_y_predict(self):
         y = tm.makeTimeDataFrame()
-        x = {'a' : tm.makeTimeDataFrame(),
-             'b' : tm.makeTimeDataFrame()}
+        x = {'a': tm.makeTimeDataFrame(),
+             'b': tm.makeTimeDataFrame()}
 
         model = ols(y=y, x=x, window=10)
         result = model.lagged_y_predict(2)
 
     def test_plm_f_test(self):
         y = tm.makeTimeDataFrame()
-        x = {'a' : tm.makeTimeDataFrame(),
-             'b' : tm.makeTimeDataFrame()}
+        x = {'a': tm.makeTimeDataFrame(),
+             'b': tm.makeTimeDataFrame()}
 
         model = ols(y=y, x=x)
 
@@ -426,14 +445,15 @@ class TestOLSMisc(unittest.TestCase):
 
     def test_plm_exclude_dummy_corner(self):
         y = tm.makeTimeDataFrame()
-        x = {'a' : tm.makeTimeDataFrame(),
-             'b' : tm.makeTimeDataFrame()}
+        x = {'a': tm.makeTimeDataFrame(),
+             'b': tm.makeTimeDataFrame()}
 
-        model = ols(y=y, x=x, entity_effects=True, dropped_dummies={'entity' : 'D'})
+        model = ols(
+            y=y, x=x, entity_effects=True, dropped_dummies={'entity': 'D'})
         model.summary
 
         self.assertRaises(Exception, ols, y=y, x=x, entity_effects=True,
-                          dropped_dummies={'entity' : 'E'})
+                          dropped_dummies={'entity': 'E'})
 
     def test_columns_tuples_summary(self):
         # #1837
@@ -444,7 +464,10 @@ class TestOLSMisc(unittest.TestCase):
         model = ols(y=Y, x=X)
         model.summary
 
+
 class TestPanelOLS(BaseTest):
+
+    _multiprocess_can_split_ = True
 
     FIELDS = ['beta', 'df', 'df_model', 'df_resid', 'f_stat',
               'p_value', 'r2', 'r2_adj', 'rmse', 'std_err',
@@ -459,7 +482,8 @@ class TestPanelOLS(BaseTest):
         index = x.index.get_level_values(0)
         index = Index(sorted(set(index)))
         exp_index = Index([datetime(2000, 1, 1), datetime(2000, 1, 3)])
-        self.assertTrue;(exp_index.equals(index))
+        self.assertTrue
+        (exp_index.equals(index))
 
         index = x.index.get_level_values(1)
         index = Index(sorted(set(index)))
@@ -493,8 +517,8 @@ class TestPanelOLS(BaseTest):
 
     def test_wls_panel(self):
         y = tm.makeTimeDataFrame()
-        x = Panel({'x1' : tm.makeTimeDataFrame(),
-                   'x2' : tm.makeTimeDataFrame()})
+        x = Panel({'x1': tm.makeTimeDataFrame(),
+                   'x2': tm.makeTimeDataFrame()})
 
         y.ix[[1, 7], 'A'] = np.nan
         y.ix[[6, 15], 'B'] = np.nan
@@ -503,7 +527,7 @@ class TestPanelOLS(BaseTest):
 
         stack_y = y.stack()
         stack_x = DataFrame(dict((k, v.stack())
-                                  for k, v in x.iterkv()))
+                                 for k, v in x.iterkv()))
 
         weights = x.std('items')
         stack_weights = weights.stack()
@@ -512,8 +536,8 @@ class TestPanelOLS(BaseTest):
         stack_x.index = stack_x.index._tuple_index
         stack_weights.index = stack_weights.index._tuple_index
 
-        result = ols(y=y, x=x, weights=1/weights)
-        expected = ols(y=stack_y, x=stack_x, weights=1/stack_weights)
+        result = ols(y=y, x=x, weights=1 / weights)
+        expected = ols(y=stack_y, x=stack_x, weights=1 / stack_weights)
 
         assert_almost_equal(result.beta, expected.beta)
 
@@ -546,7 +570,7 @@ class TestPanelOLS(BaseTest):
 
     def testWithEntityEffectsAndDroppedDummies(self):
         result = ols(y=self.panel_y2, x=self.panel_x2, entity_effects=True,
-                     dropped_dummies={'entity' : 'B'})
+                     dropped_dummies={'entity': 'B'})
 
         assert_almost_equal(result._y.values.flat, [1, 4, 5])
         exp_x = DataFrame([[1., 6., 14., 1.], [1, 9, 17, 1], [0, 30, 48, 1]],
@@ -569,7 +593,7 @@ class TestPanelOLS(BaseTest):
 
     def testWithXEffectsAndDroppedDummies(self):
         result = ols(y=self.panel_y2, x=self.panel_x2, x_effects=['x1'],
-                     dropped_dummies={'x1' : 30})
+                     dropped_dummies={'x1': 30})
 
         res = result._x
         assert_almost_equal(result._y.values.flat, [1, 4, 5])
@@ -594,7 +618,7 @@ class TestPanelOLS(BaseTest):
 
     def testWithXEffectsAndConversionAndDroppedDummies(self):
         result = ols(y=self.panel_y3, x=self.panel_x3, x_effects=['x1', 'x2'],
-                     dropped_dummies={'x2' : 'foo'})
+                     dropped_dummies={'x2': 'foo'})
 
         assert_almost_equal(result._y.values.flat, [1, 2, 3, 4])
         exp_x = [[0, 0, 0, 0, 1], [1, 0, 1, 0, 1], [0, 1, 0, 1, 1],
@@ -616,7 +640,6 @@ class TestPanelOLS(BaseTest):
         self.checkForSeries(self.series_panel_x, self.series_panel_y,
                             self.series_x, self.series_y, nw_lags=1,
                             nw_overlap=True)
-
 
     def testRolling(self):
         self.checkMovingOLS(self.panel_x, self.panel_y)
@@ -657,7 +680,8 @@ class TestPanelOLS(BaseTest):
                             time_effects=True)
 
     def testExpanding(self):
-        self.checkMovingOLS(self.panel_x, self.panel_y, window_type='expanding')
+        self.checkMovingOLS(
+            self.panel_x, self.panel_y, window_type='expanding')
 
     def testNonPooled(self):
         self.checkNonPooled(y=self.panel_y, x=self.panel_x)
@@ -748,12 +772,14 @@ class TestPanelOLS(BaseTest):
 
         assert_frame_equal(window_model.beta, rolling_model.beta)
 
+
 def _check_non_raw_results(model):
     _check_repr(model)
     _check_repr(model.resid)
     _check_repr(model.summary_as_matrix)
     _check_repr(model.y_fitted)
     _check_repr(model.y_predict)
+
 
 def _period_slice(panelModel, i):
     index = panelModel._x_trans.index
@@ -763,7 +789,10 @@ def _period_slice(panelModel, i):
 
     return slice(L, R)
 
+
 class TestOLSFilter(unittest.TestCase):
+
+    _multiprocess_can_split_ = True
 
     def setUp(self):
         date_index = date_range(datetime(2009, 12, 11), periods=3,
@@ -786,29 +815,29 @@ class TestOLSFilter(unittest.TestCase):
         ts = Series([np.nan, 5, 8, 9, 7], index=date_index)
         self.TS4 = ts
 
-        data = {'x1' : self.TS2, 'x2' : self.TS4}
+        data = {'x1': self.TS2, 'x2': self.TS4}
         self.DF1 = DataFrame(data=data)
 
-        data = {'x1' : self.TS2, 'x2' : self.TS4}
+        data = {'x1': self.TS2, 'x2': self.TS4}
         self.DICT1 = data
 
     def testFilterWithSeriesRHS(self):
         (lhs, rhs, weights, rhs_pre,
-        index, valid) = _filter_data(self.TS1, {'x1' : self.TS2}, None)
+         index, valid) = _filter_data(self.TS1, {'x1': self.TS2}, None)
         self.tsAssertEqual(self.TS1, lhs)
         self.tsAssertEqual(self.TS2[:3], rhs['x1'])
         self.tsAssertEqual(self.TS2, rhs_pre['x1'])
 
     def testFilterWithSeriesRHS2(self):
         (lhs, rhs, weights, rhs_pre,
-        index, valid) = _filter_data(self.TS2, {'x1' : self.TS1}, None)
+         index, valid) = _filter_data(self.TS2, {'x1': self.TS1}, None)
         self.tsAssertEqual(self.TS2[:3], lhs)
         self.tsAssertEqual(self.TS1, rhs['x1'])
         self.tsAssertEqual(self.TS1, rhs_pre['x1'])
 
     def testFilterWithSeriesRHS3(self):
         (lhs, rhs, weights, rhs_pre,
-        index, valid) = _filter_data(self.TS3, {'x1' : self.TS4}, None)
+         index, valid) = _filter_data(self.TS3, {'x1': self.TS4}, None)
         exp_lhs = self.TS3[2:3]
         exp_rhs = self.TS4[2:3]
         exp_rhs_pre = self.TS4[1:]
@@ -818,7 +847,7 @@ class TestOLSFilter(unittest.TestCase):
 
     def testFilterWithDataFrameRHS(self):
         (lhs, rhs, weights, rhs_pre,
-        index, valid) = _filter_data(self.TS1, self.DF1, None)
+         index, valid) = _filter_data(self.TS1, self.DF1, None)
         exp_lhs = self.TS1[1:]
         exp_rhs1 = self.TS2[1:3]
         exp_rhs2 = self.TS4[1:3]
@@ -828,7 +857,7 @@ class TestOLSFilter(unittest.TestCase):
 
     def testFilterWithDictRHS(self):
         (lhs, rhs, weights, rhs_pre,
-        index, valid) = _filter_data(self.TS1, self.DICT1, None)
+         index, valid) = _filter_data(self.TS1, self.DICT1, None)
         exp_lhs = self.TS1[1:]
         exp_rhs1 = self.TS2[1:3]
         exp_rhs2 = self.TS4[1:3]
@@ -842,5 +871,5 @@ class TestOLSFilter(unittest.TestCase):
 
 if __name__ == '__main__':
     import nose
-    nose.runmodule(argv=[__file__,'-vvs','-x','--pdb', '--pdb-failure'],
+    nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],
                    exit=False)

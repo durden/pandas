@@ -56,6 +56,7 @@ rng = DateRange('1/1/2000', periods=10000, offset=datetools.Minute())
 ts = Series(np.random.randn(len(rng)), index=rng)
 ts2 = ts[::2]
 ts3 = ts2.reindex(ts.index)
+ts4 = ts3.astype('float32')
 
 def pad():
     try:
@@ -81,9 +82,16 @@ reindex_fillna_pad = Benchmark("ts3.fillna(method='pad')", setup,
                                name="reindex_fillna_pad",
                                start_date=datetime(2011, 3, 1))
 
+reindex_fillna_pad_float32 = Benchmark("ts4.fillna(method='pad')", setup,
+                                       name="reindex_fillna_pad_float32",
+                                       start_date=datetime(2013, 1, 1))
+
 reindex_fillna_backfill = Benchmark("ts3.fillna(method='backfill')", setup,
                                     name="reindex_fillna_backfill",
                                     start_date=datetime(2011, 3, 1))
+reindex_fillna_backfill_float32 = Benchmark("ts4.fillna(method='backfill')", setup,
+                                            name="reindex_fillna_backfill_float32",
+                                            start_date=datetime(2013, 1, 1))
 
 #----------------------------------------------------------------------
 # align on level
@@ -136,7 +144,7 @@ frame_drop_duplicates = Benchmark(statement, setup,
 
 statement = "df.drop_duplicates(['key1', 'key2'], inplace=True)"
 frame_drop_dup_inplace = Benchmark(statement, setup,
-                                  start_date=datetime(2012, 5, 16))
+                                   start_date=datetime(2012, 5, 16))
 
 lib_fast_zip = Benchmark('lib.fast_zip(col_array_list)', setup,
                          name='lib_fast_zip',
@@ -154,7 +162,7 @@ lib_fast_zip_fillna = Benchmark('lib.fast_zip_fillna(col_array_list)', setup,
 
 statement2 = "df.drop_duplicates(['key1', 'key2'], inplace=True)"
 frame_drop_dup_na_inplace = Benchmark(statement2, setup,
-                                  start_date=datetime(2012, 5, 16))
+                                      start_date=datetime(2012, 5, 16))
 
 setup = common_setup + """
 s = Series(np.random.randint(0, 1000, size=10000))

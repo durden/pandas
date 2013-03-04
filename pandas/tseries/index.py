@@ -8,8 +8,9 @@ import numpy as np
 
 from pandas.core.common import isnull
 from pandas.core.index import Index, Int64Index
-from pandas.tseries.frequencies import (infer_freq, to_offset, get_period_alias,
-                                        Resolution, get_reso_string)
+from pandas.tseries.frequencies import (
+    infer_freq, to_offset, get_period_alias,
+    Resolution, get_reso_string)
 from pandas.tseries.offsets import DateOffset, generate_range, Tick
 from pandas.tseries.tools import parse_time_string, normalize_date
 from pandas.util.decorators import cache_readonly
@@ -66,10 +67,11 @@ def _dt_index_cmp(opname):
     def wrapper(self, other):
         func = getattr(super(DatetimeIndex, self), opname)
         if isinstance(other, datetime):
-            func = getattr(self, opname)
-            other = _to_m8(other)
+            other = _to_m8(other, tz=self.tz)
         elif isinstance(other, list):
             other = DatetimeIndex(other)
+        elif isinstance(other, basestring):
+            other = _to_m8(other, tz=self.tz)
         elif not isinstance(other, np.ndarray):
             other = _ensure_datetime64(other)
         result = func(other)
@@ -256,7 +258,7 @@ class DatetimeIndex(Int64Index):
                 tz = tools._maybe_get_tz(tz)
 
                 if (not isinstance(data, DatetimeIndex) or
-                    getattr(data, 'tz', None) is None):
+                        getattr(data, 'tz', None) is None):
                     # Convert tz-naive to UTC
                     ints = subarr.view('i8')
                     subarr = tslib.tz_localize_to_utc(ints, tz)
@@ -285,7 +287,7 @@ class DatetimeIndex(Int64Index):
     @classmethod
     def _generate(cls, start, end, periods, name, offset,
                   tz=None, normalize=False):
-        if com._count_not_none(start, end, periods) < 2:
+        if com._count_not_none(start, end, periods) != 2:
             raise ValueError('Must specify two of start, end, or periods')
 
         _normalized = True
@@ -337,7 +339,7 @@ class DatetimeIndex(Int64Index):
 
             if (offset._should_cache() and
                 not (offset._normalize_cache and not _normalized) and
-                _naive_in_cache_range(start, end)):
+                    _naive_in_cache_range(start, end)):
                 index = cls._cached_range(start, end, periods=periods,
                                           offset=offset, name=name)
             else:
@@ -362,7 +364,7 @@ class DatetimeIndex(Int64Index):
 
             if (offset._should_cache() and
                 not (offset._normalize_cache and not _normalized) and
-                _naive_in_cache_range(start, end)):
+                    _naive_in_cache_range(start, end)):
                 index = cls._cached_range(start, end, periods=periods,
                                           offset=offset, name=name)
             else:
@@ -605,37 +607,6 @@ class DatetimeIndex(Int64Index):
 
         return result
 
-    def append(self, other):
-        """
-        Append a collection of Index options together
-
-        Parameters
-        ----------
-        other : Index or list/tuple of indices
-
-        Returns
-        -------
-        appended : Index
-        """
-        name = self.name
-        to_concat = [self]
-
-        if isinstance(other, (list, tuple)):
-            to_concat = to_concat + list(other)
-        else:
-            to_concat.append(other)
-
-        for obj in to_concat:
-            if isinstance(obj, Index) and obj.name != name:
-                name = None
-                break
-
-        to_concat = self._ensure_compat_concat(to_concat)
-        to_concat = [x.values if isinstance(x, Index) else x
-                     for x in to_concat]
-
-        return Index(com._concat_compat(to_concat), name=name)
-
     def get_duplicates(self):
         values = Index.get_duplicates(self)
         return DatetimeIndex(values)
@@ -801,6 +772,18 @@ class DatetimeIndex(Int64Index):
         taken = self.values.take(indices, axis=axis)
         return self._simple_new(taken, self.name, None, self.tz)
 
+    def unique(self):
+        """
+        Index.unique with handling for DatetimeIndex metadata
+
+        Returns
+        -------
+        result : DatetimeIndex
+        """
+        result = Int64Index.unique(self)
+        return DatetimeIndex._simple_new(result, tz=self.tz,
+                                         name=self.name)
+
     def union(self, other):
         """
         Specialized union for DatetimeIndex objects. If combine
@@ -864,6 +847,36 @@ class DatetimeIndex(Int64Index):
             this.offset = to_offset(this.inferred_freq)
         return this
 
+    def append(self, other):
+        """
+        Append a collection of Index options together
+
+        Parameters
+        ----------
+        other : Index or list/tuple of indices
+
+        Returns
+        -------
+        appended : Index
+        """
+        name = self.name
+        to_concat = [self]
+
+        if isinstance(other, (list, tuple)):
+            to_concat = to_concat + list(other)
+        else:
+            to_concat.append(other)
+
+        for obj in to_concat:
+            if isinstance(obj, Index) and obj.name != name:
+                name = None
+                break
+
+        to_concat = self._ensure_compat_concat(to_concat)
+        to_concat, factory = _process_concat_data(to_concat, name)
+
+        return factory(to_concat)
+
     def join(self, other, how='left', level=None, return_indexers=False):
         """
         See Index.join
@@ -898,7 +911,7 @@ class DatetimeIndex(Int64Index):
         name = self.name if self.name == other.name else None
         if (isinstance(other, DatetimeIndex)
             and self.offset == other.offset
-            and self._can_fast_union(other)):
+                and self._can_fast_union(other)):
             joined = self._view_like(joined)
             joined.name = name
             return joined
@@ -1030,34 +1043,36 @@ class DatetimeIndex(Int64Index):
                                   'time series.')
 
         if reso == 'year':
-            t1 = Timestamp(datetime(parsed.year, 1, 1))
-            t2 = Timestamp(datetime(parsed.year, 12, 31))
+            t1 = Timestamp(datetime(parsed.year, 1, 1), tz=self.tz)
+            t2 = Timestamp(datetime(parsed.year, 12, 31), tz=self.tz)
         elif reso == 'month':
             d = tslib.monthrange(parsed.year, parsed.month)[1]
-            t1 = Timestamp(datetime(parsed.year, parsed.month, 1))
-            t2 = Timestamp(datetime(parsed.year, parsed.month, d))
+            t1 = Timestamp(datetime(parsed.year, parsed.month, 1), tz=self.tz)
+            t2 = Timestamp(datetime(parsed.year, parsed.month, d), tz=self.tz)
         elif reso == 'quarter':
             qe = (((parsed.month - 1) + 2) % 12) + 1  # two months ahead
             d = tslib.monthrange(parsed.year, qe)[1]   # at end of month
-            t1 = Timestamp(datetime(parsed.year, parsed.month, 1))
-            t2 = Timestamp(datetime(parsed.year, qe, d))
+            t1 = Timestamp(datetime(parsed.year, parsed.month, 1), tz=self.tz)
+            t2 = Timestamp(datetime(parsed.year, qe, d), tz=self.tz)
         elif reso == 'day' and self._resolution < Resolution.RESO_DAY:
             st = datetime(parsed.year, parsed.month, parsed.day)
-            t1 = Timestamp(st)
+            t1 = Timestamp(st, tz=self.tz)
             t2 = st + offsets.Day()
-            t2 = Timestamp(Timestamp(t2).value - 1)
+            t2 = Timestamp(Timestamp(t2, tz=self.tz).value - 1)
         elif (reso == 'hour' and
               self._resolution < Resolution.RESO_HR):
             st = datetime(parsed.year, parsed.month, parsed.day,
                           hour=parsed.hour)
-            t1 = Timestamp(st)
-            t2 = Timestamp(Timestamp(st + offsets.Hour()).value - 1)
+            t1 = Timestamp(st, tz=self.tz)
+            t2 = Timestamp(Timestamp(st + offsets.Hour(),
+                                     tz=self.tz).value - 1)
         elif (reso == 'minute' and
               self._resolution < Resolution.RESO_MIN):
             st = datetime(parsed.year, parsed.month, parsed.day,
                           hour=parsed.hour, minute=parsed.minute)
-            t1 = Timestamp(st)
-            t2 = Timestamp(Timestamp(st + offsets.Minute()).value - 1)
+            t1 = Timestamp(st, tz=self.tz)
+            t2 = Timestamp(Timestamp(st + offsets.Minute(),
+                                     tz=self.tz).value - 1)
         else:
             raise KeyError
 
@@ -1076,10 +1091,14 @@ class DatetimeIndex(Int64Index):
         Fast lookup of value from 1-dimensional ndarray. Only use this if you
         know what you're doing
         """
+        if isinstance(key, datetime):
+            # needed to localize naive datetimes
+            stamp = Timestamp(key, tz=self.tz)
+            return self._engine.get_value(series, stamp)
+
         try:
             return Index.get_value(self, series, key)
         except KeyError:
-
             try:
                 loc = self._get_string_slice(key)
                 return series[loc]
@@ -1090,14 +1109,11 @@ class DatetimeIndex(Int64Index):
                 locs = self.indexer_at_time(key)
                 return series.take(locs)
 
-            if isinstance(key, basestring):
-                stamp = Timestamp(key, tz=self.tz)
-            else:
-                stamp = Timestamp(key)
             try:
+                stamp = Timestamp(key, tz=self.tz)
                 return self._engine.get_value(series, stamp)
-            except KeyError:
-                raise KeyError(stamp)
+            except (KeyError, ValueError):
+                raise KeyError(key)
 
     def get_loc(self, key):
         """
@@ -1107,9 +1123,14 @@ class DatetimeIndex(Int64Index):
         -------
         loc : int
         """
+        if isinstance(key, datetime):
+            # needed to localize naive datetimes
+            stamp = Timestamp(key, tz=self.tz)
+            return self._engine.get_loc(stamp)
+
         try:
-            return self._engine.get_loc(key)
-        except KeyError:
+            return Index.get_loc(self, key)
+        except (KeyError, ValueError):
             try:
                 return self._get_string_slice(key)
             except (TypeError, KeyError, ValueError):
@@ -1119,17 +1140,31 @@ class DatetimeIndex(Int64Index):
                 return self.indexer_at_time(key)
 
             try:
-                return self._engine.get_loc(Timestamp(key))
+                stamp = Timestamp(key, tz=self.tz)
+                return self._engine.get_loc(stamp)
             except (KeyError, ValueError):
                 raise KeyError(key)
 
     def _get_string_slice(self, key):
         freq = getattr(self, 'freqstr',
                        getattr(self, 'inferred_freq', None))
-        asdt, parsed, reso = parse_time_string(key, freq)
-        key = asdt
+        _, parsed, reso = parse_time_string(key, freq)
         loc = self._partial_date_slice(reso, parsed)
         return loc
+
+    def slice_indexer(self, start=None, end=None, step=None):
+        """
+        Index.slice_indexer, customized to handle time slicing
+        """
+        if isinstance(start, time) and isinstance(end, time):
+            if step is not None and step != 1:
+                raise ValueError('Must have step size of 1 with time slices')
+            return self.indexer_between_time(start, end)
+
+        if isinstance(start, time) or isinstance(end, time):
+            raise KeyError('Cannot mix time and non-time slice keys')
+
+        return Index.slice_indexer(self, start, end, step)
 
     def slice_locs(self, start=None, end=None):
         """
@@ -1150,6 +1185,9 @@ class DatetimeIndex(Int64Index):
                 return start_loc, end_loc
             except KeyError:
                 pass
+
+        if isinstance(start, time) or isinstance(end, time):
+            raise KeyError('Cannot use slice_locs with time slice keys')
 
         return Index.slice_locs(self, start, end)
 
@@ -1238,7 +1276,7 @@ class DatetimeIndex(Int64Index):
         if isinstance(key, np.ndarray):
             key = np.array(key, dtype=_NS_DTYPE, copy=False)
         else:
-            key = _to_m8(key)
+            key = _to_m8(key, tz=self.tz)
 
         return self.values.searchsorted(key, side=side)
 
@@ -1293,7 +1331,7 @@ class DatetimeIndex(Int64Index):
             return True
 
         if (not hasattr(other, 'inferred_type') or
-            other.inferred_type != 'datetime64'):
+                other.inferred_type != 'datetime64'):
             if self.offset is not None:
                 return False
             try:
@@ -1304,7 +1342,8 @@ class DatetimeIndex(Int64Index):
         if self.tz is not None:
             if other.tz is None:
                 return False
-            same_zone = tslib.get_timezone(self.tz) == tslib.get_timezone(other.tz)
+            same_zone = tslib.get_timezone(
+                self.tz) == tslib.get_timezone(other.tz)
         else:
             if other.tz is not None:
                 return False
@@ -1326,12 +1365,23 @@ class DatetimeIndex(Int64Index):
         new_index : Index
         """
         if isinstance(item, datetime):
-            item = _to_m8(item)
+            item = _to_m8(item, tz=self.tz)
 
         new_index = np.concatenate((self[:loc].asi8,
                                     [item.view(np.int64)],
                                     self[loc:].asi8))
         return DatetimeIndex(new_index, freq='infer')
+
+    def delete(self, loc):
+        """
+        Make new DatetimeIndex with passed location deleted
+
+        Returns
+        -------
+        new_index : DatetimeIndex
+        """
+        arr = np.delete(self.values, loc)
+        return DatetimeIndex(arr, tz=self.tz)
 
     def _view_like(self, ndarray):
         result = ndarray.view(type(self))
@@ -1589,13 +1639,13 @@ def bdate_range(start=None, end=None, periods=None, freq='B', tz=None,
                          freq=freq, tz=tz, normalize=normalize, name=name)
 
 
-def _to_m8(key):
+def _to_m8(key, tz=None):
     '''
     Timestamp-like => dt64
     '''
-    if not isinstance(key, datetime):
+    if not isinstance(key, Timestamp):
         # this also converts strings
-        key = Timestamp(key)
+        key = Timestamp(key, tz=tz)
 
     return np.int64(tslib.pydt_to_i8(key)).view(_NS_DTYPE)
 
@@ -1633,3 +1683,55 @@ def _in_range(start, end, rng_start, rng_end):
 def _time_to_micros(time):
     seconds = time.hour * 60 * 60 + 60 * time.minute + time.second
     return 1000000 * seconds + time.microsecond
+
+
+def _process_concat_data(to_concat, name):
+    klass = Index
+    kwargs = {}
+    concat = np.concatenate
+
+    all_dti = True
+    need_utc_convert = False
+    has_naive = False
+    tz = None
+
+    for x in to_concat:
+        if not isinstance(x, DatetimeIndex):
+            all_dti = False
+        else:
+            if tz is None:
+                tz = x.tz
+
+            if x.tz is None:
+                has_naive = True
+
+            if x.tz != tz:
+                need_utc_convert = True
+                tz = 'UTC'
+
+    if all_dti:
+        need_obj_convert = False
+        if has_naive and tz is not None:
+            need_obj_convert = True
+
+        if need_obj_convert:
+            to_concat = [x.asobject.values for x in to_concat]
+
+        else:
+            if need_utc_convert:
+                to_concat = [x.tz_convert('UTC').values for x in to_concat]
+            else:
+                to_concat = [x.values for x in to_concat]
+
+            klass = DatetimeIndex
+            kwargs = {'tz': tz}
+            concat = com._concat_compat
+    else:
+        for i, x in enumerate(to_concat):
+            if isinstance(x, DatetimeIndex):
+                to_concat[i] = x.asobject.values
+            elif isinstance(x, Index):
+                to_concat[i] = x.values
+
+    factory_func = lambda x: klass(concat(x), name=name, **kwargs)
+    return to_concat, factory_func

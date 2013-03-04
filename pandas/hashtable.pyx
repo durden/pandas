@@ -225,8 +225,6 @@ cdef class StringHashTable(HashTable):
             if k == self.table.n_buckets:
                 k = kh_put_str(self.table, buf, &ret)
                 # print 'putting %s, %s' % (val, count)
-                if not ret:
-                    kh_del_str(self.table, k)
                 count += 1
                 uniques.append(val)
 
@@ -254,8 +252,6 @@ cdef class StringHashTable(HashTable):
             else:
                 k = kh_put_str(self.table, buf, &ret)
                 # print 'putting %s, %s' % (val, count)
-                if not ret:
-                    kh_del_str(self.table, k)
 
                 self.table.vals[k] = count
                 reverse[count] = val
@@ -356,8 +352,6 @@ cdef class Int32HashTable(HashTable):
                 labels[i] = idx
             else:
                 k = kh_put_int32(self.table, val, &ret)
-                if not ret:
-                    kh_del_int32(self.table, k)
                 self.table.vals[k] = count
                 reverse[count] = val
                 labels[i] = count
@@ -913,3 +907,39 @@ def value_count_int64(ndarray[int64_t] values):
     kh_destroy_int64(table)
 
     return result_keys, result_counts
+
+def value_count_object(ndarray[object] values,
+                       ndarray[uint8_t, cast=True] mask):
+    cdef:
+        Py_ssize_t i, n = len(values)
+        kh_pymap_t *table
+        int ret = 0
+        list uniques = []
+
+    table = kh_init_pymap()
+    kh_resize_pymap(table, n // 10)
+
+    for i in range(n):
+        if mask[i]:
+            continue
+
+        val = values[i]
+        k = kh_get_pymap(table, <PyObject*> val)
+        if k != table.n_buckets:
+            table.vals[k] += 1
+        else:
+            k = kh_put_pymap(table, <PyObject*> val, &ret)
+            table.vals[k] = 1
+
+    i = 0
+    result_keys = np.empty(table.n_occupied, dtype=object)
+    result_counts = np.zeros(table.n_occupied, dtype=np.int64)
+    for k in range(table.n_buckets):
+        if kh_exist_pymap(table, k):
+            result_keys[i] = <object> table.keys[k]
+            result_counts[i] = table.vals[k]
+            i += 1
+    kh_destroy_pymap(table)
+
+    return result_keys, result_counts
+

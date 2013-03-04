@@ -1,6 +1,7 @@
 *.pyc
 *.pyo
 *.swp
+.ropeproject
 build
 dist
 MANIFEST
@@ -26,3 +27,9 @@ pandas.egg-info
 .tox
 pandas/io/*.dat
 pandas/io/*.json
+*.log
+.noseids
+
+.idea/libraries/sass_stdlib.xml
+
+.idea/pandas.iml

@@ -42,6 +42,11 @@ class _SparseMockBlockManager(object):
     def axes(self):
         return [self.sp_frame.columns, self.sp_frame.index]
 
+    @property
+    def blocks(self):
+        """ return our series in the column order """
+        s = self.sp_frame._series
+        return [ self.iget(i) for i in self.sp_frame.columns ]
 
 class SparseDataFrame(DataFrame):
     """
@@ -114,7 +119,7 @@ class SparseDataFrame(DataFrame):
         # do nothing when DataFrame calls this method
         pass
 
-    def convert_objects(self):
+    def convert_objects(self, convert_dates=True):
         # XXX
         return self
 
@@ -235,6 +240,13 @@ class SparseDataFrame(DataFrame):
         data = dict((k, v.to_dense()) for k, v in self.iteritems())
         return DataFrame(data, index=self.index)
 
+    def get_dtype_counts(self):
+        from collections import defaultdict
+        d = defaultdict(int)
+        for k, v in self.iteritems():
+            d[v.dtype.name] += 1
+        return Series(d)
+     
     def astype(self, dtype):
         raise NotImplementedError
 
@@ -335,14 +347,7 @@ class SparseDataFrame(DataFrame):
             if isinstance(key, slice):
                 date_rng = self.index[key]
                 return self.reindex(date_rng)
-
             elif isinstance(key, (np.ndarray, list)):
-                if isinstance(key, list):
-                    key = lib.list_to_object_array(key)
-
-                # also raises Exception if object array with NA values
-                if com._is_bool_indexer(key):
-                    key = np.asarray(key, dtype=bool)
                 return self._getitem_array(key)
             else:  # pragma: no cover
                 raise

@@ -25,7 +25,9 @@ This module supports the following requirements:
 - all options in a certain sub - namespace can be reset at once.
 - the user can set / get / reset or ask for the description of an option.
 - a developer can register and mark an option as deprecated.
-
+- you can register a callback to be invoked when the the option value
+  is set or reset. Changing the stored value is considered misuse, but
+  is not verboten.
 
 Implementation
 ==============
@@ -54,7 +56,8 @@ from collections import namedtuple
 import warnings
 
 DeprecatedOption = namedtuple('DeprecatedOption', 'key msg rkey removal_ver')
-RegisteredOption = namedtuple('RegisteredOption', 'key defval doc validator')
+RegisteredOption = namedtuple(
+    'RegisteredOption', 'key defval doc validator cb')
 
 _deprecated_options = {}  # holds deprecated option metdata
 _registered_options = {}  # holds registered option metdata
@@ -65,37 +68,34 @@ _reserved_keys = ['all']  # keys which have a special meaning
 ##########################################
 # User API
 
-def _get_option(pat):
+def _get_single_key(pat, silent):
     keys = _select_options(pat)
     if len(keys) == 0:
-        _warn_if_deprecated(pat)
+        if not silent:
+            _warn_if_deprecated(pat)
         raise KeyError('No such keys(s)')
     if len(keys) > 1:
         raise KeyError('Pattern matched multiple keys')
     key = keys[0]
 
-    _warn_if_deprecated(key)
+    if not silent:
+        _warn_if_deprecated(key)
 
     key = _translate_key(key)
+
+    return key
+
+
+def _get_option(pat, silent=False):
+    key = _get_single_key(pat, silent)
 
     # walk the nested dict
     root, k = _get_root(key)
-
     return root[k]
 
 
-def _set_option(pat, value):
-
-    keys = _select_options(pat)
-    if len(keys) == 0:
-        _warn_if_deprecated(pat)
-        raise KeyError('No such keys(s)')
-    if len(keys) > 1:
-        raise KeyError('Pattern matched multiple keys')
-    key = keys[0]
-
-    _warn_if_deprecated(key)
-    key = _translate_key(key)
+def _set_option(pat, value, silent=False):
+    key = _get_single_key(pat, silent)
 
     o = _get_registered_option(key)
     if o and o.validator:
@@ -104,6 +104,9 @@ def _set_option(pat, value):
     # walk the nested dict
     root, k = _get_root(key)
     root[k] = value
+
+    if o.cb:
+        o.cb(key)
 
 
 def _describe_option(pat='', _print_desc=True):
@@ -138,6 +141,39 @@ def _reset_option(pat):
         _set_option(k, _registered_options[k].defval)
 
 
+class DictWrapper(object):
+    """ provide attribute-style access to a nested dict
+    """
+    def __init__(self, d, prefix=""):
+        object.__setattr__(self, "d", d)
+        object.__setattr__(self, "prefix", prefix)
+
+    def __setattr__(self, key, val):
+        prefix = object.__getattribute__(self, "prefix")
+        if prefix:
+            prefix += "."
+        prefix += key
+        # you can't set new keys
+        # can you can't overwrite subtrees
+        if key in self.d and not isinstance(self.d[key], dict):
+            _set_option(prefix, val)
+        else:
+            raise KeyError("You can only set the value of existing options")
+
+    def __getattr__(self, key):
+        prefix = object.__getattribute__(self, "prefix")
+        if prefix:
+            prefix += "."
+        prefix += key
+        v = object.__getattribute__(self, "d")[key]
+        if isinstance(v, dict):
+            return DictWrapper(v, prefix)
+        else:
+            return _get_option(prefix)
+
+    def __dir__(self):
+        return self.d.keys()
+
 # For user convenience,  we'd like to have the available options described
 # in the docstring. For dev convenience we'd like to generate the docstrings
 # dynamically instead of maintaining them by hand. To this, we use the
@@ -145,6 +181,7 @@ def _reset_option(pat):
 # __doc__ into a propery function. The doctsrings below are templates
 # using the py2.6+ advanced formatting syntax to plug in a concise list
 # of options, and option descriptions.
+
 
 class CallableDyanmicDoc(object):
 
@@ -160,7 +197,7 @@ class CallableDyanmicDoc(object):
         opts_desc = _describe_option('all', _print_desc=False)
         opts_list = pp_options_list(_registered_options.keys())
         return self.__doc_tmpl__.format(opts_desc=opts_desc,
-                opts_list=opts_list)
+                                        opts_list=opts_list)
 
 _get_option_tmpl = """"get_option(pat) - Retrieves the value of the specified option
 
@@ -186,7 +223,7 @@ KeyError if no such option exists
 {opts_desc}
 """
 
-_set_option_tmpl="""set_option(pat,value) - Sets the value of the specified option
+_set_option_tmpl = """set_option(pat,value) - Sets the value of the specified option
 
 Available options:
 {opts_list}
@@ -212,7 +249,7 @@ KeyError if no such option exists
 {opts_desc}
 """
 
-_describe_option_tmpl="""describe_option(pat,_print_desc=False) Prints the description
+_describe_option_tmpl = """describe_option(pat,_print_desc=False) Prints the description
 for one or more registered options.
 
 Call with not arguments to get a listing for all registered options.
@@ -237,7 +274,7 @@ is False
 {opts_desc}
 """
 
-_reset_option_tmpl="""reset_option(pat) - Reset one or more options to their default value.
+_reset_option_tmpl = """reset_option(pat) - Reset one or more options to their default value.
 
 Pass "all" as argument to reset all options.
 
@@ -265,12 +302,36 @@ get_option = CallableDyanmicDoc(_get_option, _get_option_tmpl)
 set_option = CallableDyanmicDoc(_set_option, _set_option_tmpl)
 reset_option = CallableDyanmicDoc(_reset_option, _reset_option_tmpl)
 describe_option = CallableDyanmicDoc(_describe_option, _describe_option_tmpl)
-
+options = DictWrapper(_global_config)
 
 ######################################################
 # Functions for use by pandas developers, in addition to User - api
 
-def register_option(key, defval, doc='', validator=None):
+
+class option_context(object):
+    def __init__(self, *args):
+        assert len(args) % 2 == 0 and len(args) >= 2, \
+            "Need to invoke as option_context(pat,val,[(pat,val),..))."
+        ops = zip(args[::2], args[1::2])
+        undo = []
+        for pat, val in ops:
+            undo.append((pat, _get_option(pat, silent=True)))
+
+        self.undo = undo
+
+        for pat, val in ops:
+            _set_option(pat, val, silent=True)
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, *args):
+        if self.undo:
+            for pat, val in self.undo:
+                _set_option(pat, val)
+
+
+def register_option(key, defval, doc='', validator=None, cb=None):
     """Register an option in the package-wide pandas config object
 
     Parameters
@@ -280,6 +341,9 @@ def register_option(key, defval, doc='', validator=None):
     doc       - a string description of the option
     validator - a function of a single argument, should raise `ValueError` if
                 called with a value which is not a legal value for the option.
+    cb        - a function of a single argument "key", which is called
+                immediately after an option value is set/reset. key is
+                the full name of the option.
 
     Returns
     -------
@@ -290,7 +354,8 @@ def register_option(key, defval, doc='', validator=None):
     ValueError if `validator` is specified and `defval` is not a valid value.
 
     """
-
+    import tokenize
+    import keyword
     key = key.lower()
 
     if key in _registered_options:
@@ -304,12 +369,19 @@ def register_option(key, defval, doc='', validator=None):
 
     # walk the nested dict, creating dicts as needed along the path
     path = key.split('.')
+
+    for k in path:
+        if not bool(re.match('^' + tokenize.Name + '$', k)):
+            raise ValueError("%s is not a valid identifier" % k)
+        if keyword.iskeyword(key):
+            raise ValueError("%s is a python keyword" % k)
+
     cursor = _global_config
     for i, p in enumerate(path[:-1]):
         if not isinstance(cursor, dict):
             raise KeyError("Path prefix to option '%s' is already an option"
                            % '.'.join(path[:i]))
-        if not cursor.has_key(p):
+        if p not in cursor:
             cursor[p] = {}
         cursor = cursor[p]
 
@@ -321,7 +393,7 @@ def register_option(key, defval, doc='', validator=None):
 
     # save the option metadata
     _registered_options[key] = RegisteredOption(key=key, defval=defval,
-            doc=doc, validator=validator)
+                                                doc=doc, validator=validator, cb=cb)
 
 
 def deprecate_option(key, msg=None, rkey=None, removal_ver=None):
@@ -400,7 +472,7 @@ def _is_deprecated(key):
     """ Returns True if the given option has been deprecated """
 
     key = key.lower()
-    return _deprecated_options.has_key(key)
+    return key in _deprecated_options
 
 
 def _get_deprecated_option(key):
@@ -482,7 +554,11 @@ def _build_option_description(k):
 
     o = _get_registered_option(k)
     d = _get_deprecated_option(k)
+
     s = u'%s: ' % k
+    if o:
+        s += u'[default: %s] [currently: %s]' % (o.defval, _get_option(k, True))
+
     if o.doc:
         s += '\n' + '\n    '.join(o.doc.strip().split('\n'))
     else:

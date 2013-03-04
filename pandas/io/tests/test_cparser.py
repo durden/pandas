@@ -35,6 +35,7 @@ def curpath():
     pth, _ = os.path.split(os.path.abspath(__file__))
     return pth
 
+
 class TestCParser(unittest.TestCase):
 
     def setUp(self):
@@ -137,12 +138,13 @@ class TestCParser(unittest.TestCase):
         tm.assert_almost_equal(result[0], expected)
 
     def test_skip_bad_lines(self):
+        # too many lines, see #2430 for why
         data = ('a:b:c\n'
                 'd:e:f\n'
                 'g:h:i\n'
-                'j:k\n'
+                'j:k:l:m\n'
                 'l:m:n\n'
-                'o:p')
+                'o:p:q:r')
 
         reader = TextReader(StringIO(data), delimiter=':',
                             header=None)
@@ -221,7 +223,7 @@ aaaaa,5"""
 
         def _make_reader(**kwds):
             return TextReader(StringIO(data), delimiter=',', header=None,
-                                **kwds)
+                              **kwds)
 
         reader = _make_reader(dtype='S5,i4')
         result = reader.read()
@@ -253,6 +255,7 @@ one,two
 2,b
 3,c
 4,d"""
+
         def _make_reader(**kwds):
             return TextReader(StringIO(data), delimiter=',', **kwds)
 
@@ -279,6 +282,7 @@ a,b,c
 4,5,6
 7,8,9
 10,11,12"""
+
         def _make_reader(**kwds):
             return TextReader(StringIO(data), delimiter=',', **kwds)
 
@@ -330,6 +334,5 @@ def assert_array_dicts_equal(left, right):
         assert(np.array_equal(v, right[k]))
 
 if __name__ == '__main__':
-    nose.runmodule(argv=[__file__,'-vvs','-x','--pdb', '--pdb-failure'],
+    nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],
                    exit=False)
-

@@ -304,7 +304,6 @@ so that the original data can be modified without creating a copy:
 
    df.mask(df >= 0)
 
-
 Take Methods
 ~~~~~~~~~~~~
 
@@ -1015,7 +1014,7 @@ the index in-place (without creating a new object):
 .. ipython:: python
 
    data.set_index('c', drop=False)
-   df = data.set_index(['a', 'b'], inplace=True)
+   data.set_index(['a', 'b'], inplace=True)
    data
 
 Remove / reset the index,  ``reset_index``
@@ -1027,8 +1026,8 @@ integer index. This is the inverse operation to ``set_index``
 
 .. ipython:: python
 
-   df
-   df.reset_index()
+   data
+   data.reset_index()
 
 The output is more similar to a SQL table or a record array. The names for the
 columns derived from the index are the ones stored in the ``names`` attribute.
@@ -1055,7 +1054,7 @@ If you create an index yourself, you can just assign it to the ``index`` field:
 
 .. code-block:: python
 
-   df.index = index
+   data.index = index
 
 Indexing internal details
 -------------------------
@@ -1082,9 +1081,7 @@ containers for the axis labels:
 The motivation for having an ``Index`` class in the first place was to enable
 different implementations of indexing. This means that it's possible for you,
 the user, to implement a custom ``Index`` subclass that may be better suited to
-a particular application than the ones provided in pandas. For example, we plan
-to add a more efficient datetime index which leverages the new
-``numpy.datetime64`` dtype in the relatively near future.
+a particular application than the ones provided in pandas.
 
 From an internal implementation point of view, the relevant methods that an
 ``Index`` must define are one or more of the following (depending on how

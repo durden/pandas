@@ -429,6 +429,8 @@ def dt64arr_to_periodarr(data, freq, tz):
     return tslib.dt64arr_to_periodarr(data.view('i8'), base, tz)
 
 # --- Period index sketch
+
+
 def _period_index_cmp(opname):
     """
     Wrap comparison operations to convert datetime-like to datetime64
@@ -994,7 +996,7 @@ class PeriodIndex(Int64Index):
 
             return PeriodIndex(result, name=self.name, freq=self.freq)
 
-    def format(self, name=False):
+    def format(self, name=False, formatter=None):
         """
         Render a string representation of the Index
         """

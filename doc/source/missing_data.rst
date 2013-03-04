@@ -61,7 +61,7 @@ arise and we wish to also consider that "missing" or "null".
 
 Until recently, for legacy reasons ``inf`` and ``-inf`` were also
 considered to be "null" in computations. This is no longer the case by
-default; use the :func: `~pandas.core.common.use_inf_as_null` function to recover it.
+default; use the ``mode.use_inf_as_null`` option to recover it.
 
 .. _missing.isnull:
 
@@ -79,6 +79,23 @@ pandas provides the :func:`~pandas.core.common.isnull` and
 **Summary:** ``NaN`` and ``None`` (in object arrays) are considered
 missing by the ``isnull`` and ``notnull`` functions. ``inf`` and
 ``-inf`` are no longer considered missing by default.
+
+Datetimes
+---------
+
+For datetime64[ns] types, ``NaT`` represents missing values. This is a pseudo-native
+sentinal value that can be represented by numpy in a singular dtype (datetime64[ns]).
+Pandas objects provide intercompatibility between ``NaT`` and ``NaN``.
+
+.. ipython:: python
+
+   df2 = df.copy()
+   df2['timestamp'] = Timestamp('20120101')
+   df2
+   df2.ix[['a','c','h'],['one','timestamp']] = np.nan
+   df2
+   df2.get_dtype_counts()
+
 
 Calculations with missing data
 ------------------------------

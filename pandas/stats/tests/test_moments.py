@@ -8,7 +8,9 @@ from numpy.random import randn
 import numpy as np
 
 from pandas import Series, DataFrame, bdate_range, isnull, notnull
-from pandas.util.testing import assert_almost_equal, assert_series_equal
+from pandas.util.testing import (
+    assert_almost_equal, assert_series_equal, assert_frame_equal
+)
 from pandas.util.py3compat import PY3
 import pandas.core.datetools as datetools
 import pandas.stats.moments as mom
@@ -16,7 +18,10 @@ import pandas.util.testing as tm
 
 N, K = 100, 10
 
+
 class TestMoments(unittest.TestCase):
+
+    _multiprocess_can_split_ = True
 
     _nan_locs = np.arange(20, 40)
     _inf_locs = np.array([])
@@ -40,10 +45,129 @@ class TestMoments(unittest.TestCase):
         counter = lambda x: np.isfinite(x).astype(float).sum()
         self._check_moment_func(mom.rolling_count, counter,
                                 has_min_periods=False,
-                                preserve_nan=False)
+                                preserve_nan=False,
+                                fill_value=0)
 
     def test_rolling_mean(self):
         self._check_moment_func(mom.rolling_mean, np.mean)
+
+    def test_cmov_mean(self):
+        try:
+            from scikits.timeseries.lib import cmov_mean
+        except ImportError:
+            raise nose.SkipTest
+
+        vals = np.random.randn(10)
+        xp = cmov_mean(vals, 5)
+
+        rs = mom.rolling_mean(vals, 5, center=True)
+        assert_almost_equal(xp.compressed(), rs[2:-2])
+        assert_almost_equal(xp.mask, np.isnan(rs))
+
+        xp = Series(rs)
+        rs = mom.rolling_mean(Series(vals), 5, center=True)
+        assert_series_equal(xp, rs)
+
+    def test_cmov_window(self):
+        try:
+            from scikits.timeseries.lib import cmov_window
+        except ImportError:
+            raise nose.SkipTest
+
+        vals = np.random.randn(10)
+        xp = cmov_window(vals, 5, 'boxcar')
+
+        rs = mom.rolling_window(vals, 5, 'boxcar', center=True)
+        assert_almost_equal(xp.compressed(), rs[2:-2])
+        assert_almost_equal(xp.mask, np.isnan(rs))
+
+        xp = Series(rs)
+        rs = mom.rolling_window(Series(vals), 5, 'boxcar', center=True)
+        assert_series_equal(xp, rs)
+
+    def test_cmov_window_corner(self):
+        try:
+            from scikits.timeseries.lib import cmov_window
+        except ImportError:
+            raise nose.SkipTest
+
+        # all nan
+        vals = np.empty(10, dtype=float)
+        vals.fill(np.nan)
+        rs = mom.rolling_window(vals, 5, 'boxcar', center=True)
+        self.assert_(np.isnan(rs).all())
+
+        # empty
+        vals = np.array([])
+        rs = mom.rolling_window(vals, 5, 'boxcar', center=True)
+        self.assert_(len(rs) == 0)
+
+        # shorter than window
+        vals = np.random.randn(5)
+        rs = mom.rolling_window(vals, 10, 'boxcar')
+        self.assert_(np.isnan(rs).all())
+        self.assert_(len(rs) == 5)
+
+    def test_cmov_window_frame(self):
+        try:
+            from scikits.timeseries.lib import cmov_window
+        except ImportError:
+            raise nose.SkipTest
+
+        # DataFrame
+        vals = np.random.randn(10, 2)
+        xp = cmov_window(vals, 5, 'boxcar')
+        rs = mom.rolling_window(DataFrame(vals), 5, 'boxcar', center=True)
+        assert_frame_equal(DataFrame(xp), rs)
+
+    def test_cmov_window_na_min_periods(self):
+        try:
+            from scikits.timeseries.lib import cmov_window
+        except ImportError:
+            raise nose.SkipTest
+
+        # min_periods
+        vals = Series(np.random.randn(10))
+        vals[4] = np.nan
+        vals[8] = np.nan
+
+        xp = mom.rolling_mean(vals, 5, min_periods=4, center=True)
+        rs = mom.rolling_window(vals, 5, 'boxcar', min_periods=4, center=True)
+
+        assert_series_equal(xp, rs)
+
+    def test_cmov_window_regular(self):
+        try:
+            from scikits.timeseries.lib import cmov_window
+        except ImportError:
+            raise nose.SkipTest
+
+        win_types = ['triang', 'blackman', 'hamming', 'bartlett', 'bohman',
+                     'blackmanharris', 'nuttall', 'barthann']
+        for wt in win_types:
+            vals = np.random.randn(10)
+            xp = cmov_window(vals, 5, wt)
+
+            rs = mom.rolling_window(Series(vals), 5, wt, center=True)
+            assert_series_equal(Series(xp), rs)
+
+    def test_cmov_window_special(self):
+        try:
+            from scikits.timeseries.lib import cmov_window
+        except ImportError:
+            raise nose.SkipTest
+
+        win_types = ['kaiser', 'gaussian', 'general_gaussian', 'slepian']
+        kwds = [{'beta': 1.}, {'std': 1.}, {'power': 2., 'width': 2.},
+                {'width': 0.5}]
+
+        for wt, k in zip(win_types, kwds):
+            vals = np.random.randn(10)
+            xp = cmov_window(vals, 5, (wt,) + tuple(k.values()))
+
+            rs = mom.rolling_window(Series(vals), 5, wt, center=True,
+                                    **k)
+            assert_series_equal(Series(xp), rs)
 
     def test_rolling_median(self):
         self._check_moment_func(mom.rolling_median, np.median)
@@ -51,35 +175,39 @@ class TestMoments(unittest.TestCase):
     def test_rolling_min(self):
         self._check_moment_func(mom.rolling_min, np.min)
 
-        a = np.array([1,2,3,4,5])
+        a = np.array([1, 2, 3, 4, 5])
         b = mom.rolling_min(a, window=100, min_periods=1)
         assert_almost_equal(b, np.ones(len(a)))
 
-        self.assertRaises(ValueError, mom.rolling_min, np.array([1,2,3]), window=3, min_periods=5)
+        self.assertRaises(ValueError, mom.rolling_min, np.array([1,
+                          2, 3]), window=3, min_periods=5)
 
     def test_rolling_max(self):
         self._check_moment_func(mom.rolling_max, np.max)
 
-        a = np.array([1,2,3,4,5])
+        a = np.array([1, 2, 3, 4, 5])
         b = mom.rolling_max(a, window=100, min_periods=1)
         assert_almost_equal(a, b)
 
-        self.assertRaises(ValueError, mom.rolling_max, np.array([1,2,3]), window=3, min_periods=5)
+        self.assertRaises(ValueError, mom.rolling_max, np.array([1,
+                          2, 3]), window=3, min_periods=5)
 
     def test_rolling_quantile(self):
         qs = [.1, .5, .9]
 
         def scoreatpercentile(a, per):
-            values = np.sort(a,axis=0)
+            values = np.sort(a, axis=0)
 
-            idx = per /1. * (values.shape[0] - 1)
+            idx = per / 1. * (values.shape[0] - 1)
             return values[int(idx)]
 
         for q in qs:
-            def f(x, window, min_periods=None, freq=None):
+            def f(x, window, min_periods=None, freq=None, center=False):
                 return mom.rolling_quantile(x, window, q,
-                                                min_periods=min_periods,
-                                                freq=freq)
+                                            min_periods=min_periods,
+                                            freq=freq,
+                                            center=center)
+
             def alt(x):
                 return scoreatpercentile(x, q)
 
@@ -87,13 +215,15 @@ class TestMoments(unittest.TestCase):
 
     def test_rolling_apply(self):
         ser = Series([])
-        assert_series_equal(ser, mom.rolling_apply(ser, 10, lambda x:x.mean()))
+        assert_series_equal(
+            ser, mom.rolling_apply(ser, 10, lambda x: x.mean()))
 
-        def roll_mean(x, window, min_periods=None, freq=None):
+        def roll_mean(x, window, min_periods=None, freq=None, center=False):
             return mom.rolling_apply(x, window,
-                                         lambda x: x[np.isfinite(x)].mean(),
-                                         min_periods=min_periods,
-                                         freq=freq)
+                                     lambda x: x[np.isfinite(x)].mean(),
+                                     min_periods=min_periods,
+                                     freq=freq,
+                                     center=center)
         self._check_moment_func(roll_mean, np.mean)
 
     def test_rolling_apply_out_of_bounds(self):
@@ -114,13 +244,13 @@ class TestMoments(unittest.TestCase):
                                 lambda x: np.std(x, ddof=0))
 
     def test_rolling_std_1obs(self):
-        result = mom.rolling_std(np.array([1.,2.,3.,4.,5.]),
+        result = mom.rolling_std(np.array([1., 2., 3., 4., 5.]),
                                  1, min_periods=1)
         expected = np.zeros(5)
 
         assert_almost_equal(result, expected)
 
-        result = mom.rolling_std(np.array([np.nan,np.nan,3.,4.,5.]),
+        result = mom.rolling_std(np.array([np.nan, np.nan, 3., 4., 5.]),
                                  3, min_periods=2)
         self.assert_(np.isnan(result[2]))
 
@@ -183,22 +313,38 @@ class TestMoments(unittest.TestCase):
         result = mom.rolling_var(arr, 2)
         self.assertTrue((result[1:] >= 0).all())
 
+        # #2527, ugh
+        arr = np.array([0.00012456, 0.0003, 0])
+        result = mom.rolling_mean(arr, 1)
+        self.assertTrue(result[-1] >= 0)
+
+        result = mom.rolling_mean(-arr, 1)
+        self.assertTrue(result[-1] <= 0)
+
     def _check_moment_func(self, func, static_comp, window=50,
                            has_min_periods=True,
+                           has_center=True,
                            has_time_rule=True,
-                           preserve_nan=True):
+                           preserve_nan=True,
+                           fill_value=None):
 
         self._check_ndarray(func, static_comp, window=window,
                             has_min_periods=has_min_periods,
-                            preserve_nan=preserve_nan)
+                            preserve_nan=preserve_nan,
+                            has_center=has_center,
+                            fill_value=fill_value)
 
         self._check_structures(func, static_comp,
                                has_min_periods=has_min_periods,
-                               has_time_rule=has_time_rule)
+                               has_time_rule=has_time_rule,
+                               fill_value=fill_value,
+                               has_center=has_center)
 
     def _check_ndarray(self, func, static_comp, window=50,
                        has_min_periods=True,
-                       preserve_nan=True):
+                       preserve_nan=True,
+                       has_center=True,
+                       fill_value=None):
 
         result = func(self.arr, window)
         assert_almost_equal(result[-1],
@@ -237,8 +383,29 @@ class TestMoments(unittest.TestCase):
             result = func(arr, 50)
             assert_almost_equal(result[-1], static_comp(arr[10:-10]))
 
+        if has_center:
+            if has_min_periods:
+                result = func(arr, 20, min_periods=15, center=True)
+                expected = func(arr, 20, min_periods=15)
+            else:
+                result = func(arr, 20, center=True)
+                expected = func(arr, 20)
+
+            assert_almost_equal(result[1], expected[10])
+            if fill_value is None:
+                self.assert_(np.isnan(result[-9:]).all())
+            else:
+                self.assert_((result[-9:] == 0).all())
+            if has_min_periods:
+                self.assert_(np.isnan(expected[23]))
+                self.assert_(np.isnan(result[14]))
+                self.assert_(np.isnan(expected[-5]))
+                self.assert_(np.isnan(result[-14]))
+
     def _check_structures(self, func, static_comp,
-                          has_min_periods=True, has_time_rule=True):
+                          has_min_periods=True, has_time_rule=True,
+                          has_center=True,
+                          fill_value=None):
 
         series_result = func(self.series, 50)
         self.assert_(isinstance(series_result, Series))
@@ -270,6 +437,30 @@ class TestMoments(unittest.TestCase):
 
             assert_almost_equal(frame_result.xs(last_date),
                                 trunc_frame.apply(static_comp))
+
+        if has_center:
+            if has_min_periods:
+                minp = 10
+                series_xp = func(self.series, 25, min_periods=minp).shift(-12)
+                frame_xp = func(self.frame, 25, min_periods=minp).shift(-12)
+
+                series_rs = func(self.series, 25, min_periods=minp,
+                                 center=True)
+                frame_rs = func(self.frame, 25, min_periods=minp,
+                                center=True)
+
+            else:
+                series_xp = func(self.series, 25).shift(-12)
+                frame_xp = func(self.frame, 25).shift(-12)
+
+                series_rs = func(self.series, 25, center=True)
+                frame_rs = func(self.frame, 25, center=True)
+
+            if fill_value is not None:
+                series_xp = series_xp.fillna(fill_value)
+                frame_xp = frame_xp.fillna(fill_value)
+            assert_series_equal(series_xp, series_rs)
+            assert_frame_equal(frame_xp, frame_rs)
 
     def test_legacy_time_rule_arg(self):
         from StringIO import StringIO
@@ -436,9 +627,9 @@ class TestMoments(unittest.TestCase):
 
         def expanding_mean(x, min_periods=1, freq=None):
             return mom.expanding_apply(x,
-                                         lambda x: x.mean(),
-                                         min_periods=min_periods,
-                                         freq=freq)
+                                       lambda x: x.mean(),
+                                       min_periods=min_periods,
+                                       freq=freq)
         self._check_expanding(expanding_mean, np.mean)
 
     def test_expanding_corr(self):
@@ -540,5 +731,5 @@ class TestMoments(unittest.TestCase):
 
 if __name__ == '__main__':
     import nose
-    nose.runmodule(argv=[__file__,'-vvs','-x','--pdb', '--pdb-failure'],
+    nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],
                    exit=False)

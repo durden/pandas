@@ -9,11 +9,11 @@ from pandas.core.series import Series
 from pandas.core.frame import DataFrame
 
 from pandas.core.categorical import Categorical
-from pandas.core.common import notnull, _ensure_platform_int
+from pandas.core.common import (notnull, _ensure_platform_int, _maybe_promote,
+                                _maybe_upcast)
 from pandas.core.groupby import (get_group_index, _compress_group_index,
                                  decons_group_index)
 import pandas.core.common as com
-import pandas.lib as lib
 import pandas.algos as algos
 
 
@@ -84,24 +84,27 @@ class _Unstacker(object):
         to_sort = labs[:v] + labs[v + 1:] + [labs[v]]
         sizes = [len(x) for x in levs[:v] + levs[v + 1:] + [levs[v]]]
 
-        group_index = get_group_index(to_sort, sizes)
-        comp_index, obs_ids = _compress_group_index(group_index)
+        comp_index, obs_ids = get_compressed_ids(to_sort, sizes)
+
+        # group_index = get_group_index(to_sort, sizes)
+        # comp_index, obs_ids = _compress_group_index(group_index)
+
         ngroups = len(obs_ids)
 
         indexer = algos.groupsort_indexer(comp_index, ngroups)[0]
         indexer = _ensure_platform_int(indexer)
 
-        self.sorted_values = com.take_2d(self.values, indexer, axis=0)
+        self.sorted_values = com.take_nd(self.values, indexer, axis=0)
         self.sorted_labels = [l.take(indexer) for l in to_sort]
 
     def _make_selectors(self):
         new_levels = self.new_index_levels
 
         # make the mask
-        group_index = get_group_index(self.sorted_labels[:-1],
-                                      [len(x) for x in new_levels])
+        remaining_labels = self.sorted_labels[:-1]
+        level_sizes = [len(x) for x in new_levels]
 
-        comp_index, obs_ids = _compress_group_index(group_index)
+        comp_index, obs_ids = get_compressed_ids(remaining_labels, level_sizes)
         ngroups = len(obs_ids)
 
         comp_index = _ensure_platform_int(comp_index)
@@ -134,7 +137,7 @@ class _Unstacker(object):
             # rare case, level values not observed
             if len(obs_ids) < self.full_shape[1]:
                 inds = (value_mask.sum(0) > 0).nonzero()[0]
-                values = com.take_2d(values, inds, axis=1)
+                values = com.take_nd(values, inds, axis=1)
                 columns = columns[inds]
 
         return DataFrame(values, index=index, columns=columns)
@@ -146,16 +149,15 @@ class _Unstacker(object):
         stride = values.shape[1]
         result_width = width * stride
 
-        new_values = np.empty((length, result_width), dtype=values.dtype)
+        dtype, fill_value = _maybe_promote(values.dtype)
+        new_values = np.empty((length, result_width), dtype=dtype)
+        new_values.fill(fill_value)
         new_mask = np.zeros((length, result_width), dtype=bool)
-
-        new_values = com._maybe_upcast(new_values)
-        new_values.fill(np.nan)
 
         # is there a simpler / faster way of doing this?
         for i in xrange(values.shape[1]):
-            chunk = new_values[:, i * width : (i + 1) * width]
-            mask_chunk = new_mask[:, i * width : (i + 1) * width]
+            chunk = new_values[:, i * width: (i + 1) * width]
+            mask_chunk = new_mask[:, i * width: (i + 1) * width]
 
             chunk.flat[self.mask] = self.sorted_values[:, i]
             mask_chunk.flat[self.mask] = True
@@ -242,8 +244,13 @@ def _unstack_multiple(data, clocs):
         new_labels = recons_labels
     else:
         if isinstance(data.columns, MultiIndex):
-            raise NotImplementedError('Unstacking multiple levels with '
-                                      'hierarchical columns not yet supported')
+            result = data
+            for i in range(len(clocs)):
+                val = clocs[i]
+                result = result.unstack(val)
+                clocs = [val if i > val else val - 1 for val in clocs]
+
+            return result
 
         dummy = DataFrame(data.values, index=dummy_index,
                           columns=data.columns)
@@ -393,6 +400,32 @@ def _unstack_frame(obj, level):
         return unstacker.get_result()
 
 
+def get_compressed_ids(labels, sizes):
+    # no overflow
+    if com._long_prod(sizes) < 2 ** 63:
+        group_index = get_group_index(labels, sizes)
+        comp_index, obs_ids = _compress_group_index(group_index)
+    else:
+        n = len(labels[0])
+        mask = np.zeros(n, dtype=bool)
+        for v in labels:
+            mask |= v < 0
+
+        while com._long_prod(sizes) >= 2 ** 63:
+            i = len(sizes)
+            while com._long_prod(sizes[:i]) >= 2 ** 63:
+                i -= 1
+
+            rem_index, rem_ids = get_compressed_ids(labels[:i],
+                                                    sizes[:i])
+            sizes = [len(rem_ids)] + sizes[i:]
+            labels = [rem_index] + labels[i:]
+
+        return get_compressed_ids(labels, sizes)
+
+    return comp_index, obs_ids
+
+
 def stack(frame, level=-1, dropna=True):
     """
     Convert DataFrame to Series with multi-level Index. Columns become the
@@ -528,33 +561,39 @@ def melt(frame, id_vars=None, value_vars=None):
     b 3 4
     c 5 6
 
-    >>> melt(df, id_vars=['A'])
+    >>> melt(df, id_vars=['A'], value_vars=['B'])
     A variable value
     a B        1
     b B        3
     c B        5
-    a C        2
-    b C        4
-    c C        6
     """
     # TODO: what about the existing index?
-
-    N, K = frame.shape
-
-    mdata = {}
-
     if id_vars is not None:
-        id_vars = list(id_vars)
-        frame = frame.copy()
-        K -= len(id_vars)
-        for col in id_vars:
-            mdata[col] = np.tile(frame.pop(col).values, K)
+        if not isinstance(id_vars, (tuple, list, np.ndarray)):
+            id_vars = [id_vars]
+        else:
+            id_vars = list(id_vars)
     else:
         id_vars = []
+
+    if value_vars is not None:
+        if not isinstance(value_vars, (tuple, list, np.ndarray)):
+            value_vars = [value_vars]
+        frame = frame.ix[:, id_vars + value_vars]
+    else:
+        frame = frame.copy()
+
+    N, K = frame.shape
+    K -= len(id_vars)
+
+    mdata = {}
+    for col in id_vars:
+        mdata[col] = np.tile(frame.pop(col).values, K)
 
     mcolumns = id_vars + ['variable', 'value']
 
     mdata['value'] = frame.values.ravel('F')
+
     mdata['variable'] = np.asarray(frame.columns).repeat(N)
     return DataFrame(mdata, columns=mcolumns)
 
@@ -722,12 +761,8 @@ def make_axis_dummies(frame, axis='minor', transform=None):
     return DataFrame(values, columns=items, index=frame.index)
 
 
-def block2d_to_block3d(values, items, shape, major_labels, minor_labels,
-                       ref_items=None):
-    """
-    Developer method for pivoting DataFrame -> Panel. Used in HDFStore and
-    DataFrame.to_panel
-    """
+def block2d_to_blocknd(values, items, shape, labels, ref_items=None):
+    """ pivot to the labels shape """
     from pandas.core.internals import make_block
     panel_shape = (len(items),) + shape
 
@@ -735,16 +770,16 @@ def block2d_to_block3d(values, items, shape, major_labels, minor_labels,
 
     # Create observation selection vector using major and minor
     # labels, for converting to panel format.
-    selector = minor_labels + shape[1] * major_labels
+    selector = factor_indexer(shape[1:], labels)
     mask = np.zeros(np.prod(shape), dtype=bool)
     mask.put(selector, True)
 
-    pvalues = np.empty(panel_shape, dtype=values.dtype)
-    if not issubclass(pvalues.dtype.type, (np.integer, np.bool_)):
-        pvalues.fill(np.nan)
-    elif not mask.all():
-        pvalues = com._maybe_upcast(pvalues)
-        pvalues.fill(np.nan)
+    if mask.all():
+        pvalues = np.empty(panel_shape, dtype=values.dtype)
+    else:
+        dtype, fill_value = _maybe_promote(values.dtype)
+        pvalues = np.empty(panel_shape, dtype=dtype)
+        pvalues.fill(fill_value)
 
     values = values
     for i in xrange(len(items)):
@@ -754,3 +789,9 @@ def block2d_to_block3d(values, items, shape, major_labels, minor_labels,
         ref_items = items
 
     return make_block(pvalues, items, ref_items)
+
+
+def factor_indexer(shape, labels):
+    """ given a tuple of shape and a list of Factor lables, return the expanded label indexer """
+    mult = np.array(shape)[::-1].cumprod()[::-1]
+    return com._ensure_platform_int(np.sum(np.array(labels).T * np.append(mult, [1]), axis=1).T)

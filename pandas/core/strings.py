@@ -1,6 +1,5 @@
 import numpy as np
 
-from functools import wraps
 from itertools import izip
 from pandas.core.common import isnull
 from pandas.core.series import Series
@@ -87,18 +86,40 @@ def _length_check(others):
 
 def _na_map(f, arr, na_result=np.nan):
     # should really _check_ for NA
-    def g(x):
-        try:
-            return f(x)
-        except (TypeError, AttributeError):
-            return na_result
-    return _map(g, arr)
+    return _map(f, arr, na_mask=True, na_value=na_result)
 
 
-def _map(f, arr):
+def _map(f, arr, na_mask=False, na_value=np.nan):
     if not isinstance(arr, np.ndarray):
         arr = np.asarray(arr, dtype=object)
-    return lib.map_infer(arr, f)
+    if na_mask:
+        mask = isnull(arr)
+        try:
+            result = lib.map_infer_mask(arr, f, mask.view(np.uint8))
+        except (TypeError, AttributeError):
+            def g(x):
+                try:
+                    return f(x)
+                except (TypeError, AttributeError):
+                    return na_value
+            return _map(g, arr)
+        if na_value is not np.nan:
+            np.putmask(result, mask, na_value)
+            if result.dtype == object:
+                result = lib.maybe_convert_objects(result)
+        return result
+    else:
+        return lib.map_infer(arr, f)
+
+def str_title(arr):
+    """
+    Convert strings to titlecased version
+
+    Returns
+    -------
+    titled : array
+    """
+    return _na_map(lambda x: x.title(), arr)
 
 
 def str_count(arr, pat, flags=0):
@@ -236,6 +257,7 @@ def str_replace(arr, pat, repl, n=-1, case=True, flags=0):
             flags |= re.IGNORECASE
         regex = re.compile(pat, flags=flags)
         n = n if n >= 0 else 0
+
         def f(x):
             return regex.sub(repl, x, count=n)
     else:
@@ -393,7 +415,7 @@ def str_center(arr, width):
     return str_pad(arr, width, side='both')
 
 
-def str_split(arr, pat=None, n=-1):
+def str_split(arr, pat=None, n=None):
     """
     Split each string (a la re.split) in array by given pattern, propagating NA
     values
@@ -402,18 +424,28 @@ def str_split(arr, pat=None, n=-1):
     ----------
     pat : string, default None
         String or regular expression to split on. If None, splits on whitespace
-    n : int, default -1 (all)
+    n : int, default None (all)
+
+    Notes
+    -----
+    Both 0 and -1 will be interpreted as return all splits
 
     Returns
     -------
     split : array
     """
     if pat is None:
+        if n is None or n == 0:
+            n = -1
         f = lambda x: x.split()
     else:
         if len(pat) == 1:
+            if n is None or n == 0:
+                n = -1
             f = lambda x: x.split(pat, n)
         else:
+            if n is None or n == -1:
+                n = 0
             regex = re.compile(pat)
             f = lambda x: regex.split(x, maxsplit=n)
 
@@ -451,39 +483,51 @@ def str_slice_replace(arr, start=None, stop=None, repl=None):
     raise NotImplementedError
 
 
-def str_strip(arr):
+def str_strip(arr, to_strip=None):
     """
     Strip whitespace (including newlines) from each string in the array
+
+    Parameters
+    ----------
+    to_strip : str or unicode
 
     Returns
     -------
     stripped : array
     """
-    return _na_map(lambda x: x.strip(), arr)
+    return _na_map(lambda x: x.strip(to_strip), arr)
 
 
-def str_lstrip(arr):
+def str_lstrip(arr, to_strip=None):
     """
     Strip whitespace (including newlines) from left side of each string in the
     array
 
+    Parameters
+    ----------
+    to_strip : str or unicode
+
     Returns
     -------
     stripped : array
     """
-    return _na_map(lambda x: x.lstrip(), arr)
+    return _na_map(lambda x: x.lstrip(to_strip), arr)
 
 
-def str_rstrip(arr):
+def str_rstrip(arr, to_strip=None):
     """
     Strip whitespace (including newlines) from right side of each string in the
     array
 
+    Parameters
+    ----------
+    to_strip : str or unicode
+
     Returns
     -------
     stripped : array
     """
-    return _na_map(lambda x: x.rstrip(), arr)
+    return _na_map(lambda x: x.rstrip(to_strip), arr)
 
 
 def str_wrap(arr, width=80):
@@ -686,6 +730,21 @@ class StringMethods(object):
         result = str_encode(self.series, encoding, errors)
         return self._wrap_result(result)
 
+    @copy(str_strip)
+    def strip(self, to_strip=None):
+        result = str_strip(self.series, to_strip)
+        return self._wrap_result(result)
+
+    @copy(str_lstrip)
+    def lstrip(self, to_strip=None):
+        result = str_lstrip(self.series, to_strip)
+        return self._wrap_result(result)
+
+    @copy(str_rstrip)
+    def rstrip(self, to_strip=None):
+        result = str_rstrip(self.series, to_strip)
+        return self._wrap_result(result)
+
     count = _pat_wrapper(str_count, flags=True)
     startswith = _pat_wrapper(str_startswith, na=True)
     endswith = _pat_wrapper(str_endswith, na=True)
@@ -693,8 +752,6 @@ class StringMethods(object):
     match = _pat_wrapper(str_match, flags=True)
 
     len = _noarg_wrapper(str_len)
-    strip = _noarg_wrapper(str_strip)
-    rstrip = _noarg_wrapper(str_rstrip)
-    lstrip = _noarg_wrapper(str_lstrip)
     lower = _noarg_wrapper(str_lower)
     upper = _noarg_wrapper(str_upper)
+    title = _noarg_wrapper(str_title)

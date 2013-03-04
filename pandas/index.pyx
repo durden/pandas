@@ -18,7 +18,6 @@ from hashtable cimport *
 from . import algos, tslib, hashtable as _hash
 from .tslib import Timestamp
 
-
 from datetime cimport (get_datetime64_value, _pydatetime_to_dts,
                        pandas_datetimestruct)
 
@@ -30,6 +29,13 @@ cdef extern from "datetime.h":
 
 cdef int64_t iNaT = util.get_nat()
 
+try:
+    from dateutil.tz import tzutc as _du_utc
+    import pytz
+    UTC = pytz.utc
+    have_pytz = True
+except:
+    have_pytz = False
 
 PyDateTime_IMPORT
 
@@ -476,7 +482,9 @@ cdef class DatetimeEngine(Int64Engine):
 
 cpdef convert_scalar(ndarray arr, object value):
     if arr.descr.type_num == NPY_DATETIME:
-        if isinstance(value, Timestamp):
+        if isinstance(value,np.ndarray):
+            pass
+        elif isinstance(value, Timestamp):
             return value.value
         elif value is None or value != value:
             return iNaT
@@ -497,6 +505,13 @@ cdef inline _to_i8(object val):
         if util.is_datetime64_object(val):
             return get_datetime64_value(val)
         elif PyDateTime_Check(val):
-            return _pydatetime_to_dts(val, &dts)
+            tzinfo = getattr(val, 'tzinfo', None)
+            val = _pydatetime_to_dts(val, &dts)
+            if tzinfo is not None and not _is_utc(tzinfo):
+                offset = tslib._get_utcoffset(tzinfo, val)
+                val -= tslib._delta_to_nanoseconds(offset)
+
         return val
 
+cdef inline bint _is_utc(object tz):
+    return tz is UTC or isinstance(tz, _du_utc)

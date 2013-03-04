@@ -24,16 +24,11 @@ from pandas.util.testing import (assert_panel_equal,
                                  assert_almost_equal)
 import pandas.util.testing as tm
 
+
 def add_nans(panel4d):
     for l, label in enumerate(panel4d.labels):
         panel = panel4d[label]
         tm.add_nans(panel)
-
-def _skip_if_no_scipy():
-    try:
-        import scipy.stats
-    except ImportError:
-        raise nose.SkipTest
 
 
 class SafeForLongAndSparse(object):
@@ -74,8 +69,11 @@ class SafeForLongAndSparse(object):
         self._check_stat_op('max', np.max)
 
     def test_skew(self):
-        _skip_if_no_scipy()
-        from scipy.stats import skew
+        try:
+            from scipy.stats import skew
+        except ImportError:
+            raise nose.SkipTest
+
         def this_skew(x):
             if len(x) < 3:
                 return np.nan
@@ -143,6 +141,7 @@ class SafeForLongAndSparse(object):
 
         self.assertRaises(Exception, f, axis=obj.ndim)
 
+
 class SafeForSparse(object):
 
     _multiprocess_can_split_ = True
@@ -163,9 +162,9 @@ class SafeForSparse(object):
 
     def test_set_axis(self):
         new_labels = Index(np.arange(len(self.panel4d.labels)))
-        new_items  = Index(np.arange(len(self.panel4d.items)))
-        new_major  = Index(np.arange(len(self.panel4d.major_axis)))
-        new_minor  = Index(np.arange(len(self.panel4d.minor_axis)))
+        new_items = Index(np.arange(len(self.panel4d.items)))
+        new_major = Index(np.arange(len(self.panel4d.major_axis)))
+        new_minor = Index(np.arange(len(self.panel4d.minor_axis)))
 
         # ensure propagate to potentially prior-cached items too
         label = self.panel4d['l1']
@@ -240,7 +239,7 @@ class SafeForSparse(object):
 
         # select labels
         result = p.select(lambda x: x in ('l1', 'l3'), axis='labels')
-        expected = p.reindex(labels=['l1','l3'])
+        expected = p.reindex(labels=['l1', 'l3'])
         self.assert_panel4d_equal(result, expected)
 
         # select items
@@ -286,6 +285,7 @@ class SafeForSparse(object):
         expected = np.abs(df)
         assert_frame_equal(result, expected)
 
+
 class CheckIndexing(object):
 
     _multiprocess_can_split_ = True
@@ -295,7 +295,7 @@ class CheckIndexing(object):
 
     def test_delitem_and_pop(self):
         expected = self.panel4d['l2']
-        result   = self.panel4d.pop('l2')
+        result = self.panel4d.pop('l2')
         assert_panel_equal(expected, result)
         self.assert_('l2' not in self.panel4d.labels)
 
@@ -339,20 +339,21 @@ class CheckIndexing(object):
 
     def test_setitem(self):
         ## LongPanel with one item
-        #lp = self.panel.filter(['ItemA', 'ItemB']).to_frame()
-        #self.assertRaises(Exception, self.panel.__setitem__,
+        # lp = self.panel.filter(['ItemA', 'ItemB']).to_frame()
+        # self.assertRaises(Exception, self.panel.__setitem__,
         #                  'ItemE', lp)
 
         # Panel
-        p = Panel(dict(ItemA = self.panel4d['l1']['ItemA'][2:].filter(items=['A', 'B'])))
+        p = Panel(dict(
+            ItemA=self.panel4d['l1']['ItemA'][2:].filter(items=['A', 'B'])))
         self.panel4d['l4'] = p
         self.panel4d['l5'] = p
 
         p2 = self.panel4d['l4']
 
-        assert_panel_equal(p, p2.reindex(items      = p.items,
-                                         major_axis = p.major_axis,
-                                         minor_axis = p.minor_axis))
+        assert_panel_equal(p, p2.reindex(items=p.items,
+                                         major_axis=p.major_axis,
+                                         minor_axis=p.minor_axis))
 
         # scalar
         self.panel4d['lG'] = 1
@@ -368,11 +369,56 @@ class CheckIndexing(object):
         self.panel4d['lP'] = self.panel4d['l1'] > 0
         self.assert_(self.panel4d['lP'].values.dtype == np.bool_)
 
+    def test_comparisons(self):
+        p1 = tm.makePanel4D()
+        p2 = tm.makePanel4D()
+
+        tp = p1.reindex(labels=p1.labels + ['foo'])
+        p = p1[p1.labels[0]]
+
+        def test_comp(func):
+            result = func(p1, p2)
+            self.assert_(np.array_equal(result.values,
+                                        func(p1.values, p2.values)))
+
+            # versus non-indexed same objs
+            self.assertRaises(Exception, func, p1, tp)
+
+            # versus different objs
+            self.assertRaises(Exception, func, p1, p)
+
+            result3 = func(self.panel4d, 0)
+            self.assert_(np.array_equal(result3.values,
+                                        func(self.panel4d.values, 0)))
+
+        test_comp(operator.eq)
+        test_comp(operator.ne)
+        test_comp(operator.lt)
+        test_comp(operator.gt)
+        test_comp(operator.ge)
+        test_comp(operator.le)
+
+    def test_setitem_ndarray(self):
+        raise nose.SkipTest
+    #    from pandas import DateRange, datetools
+
+    #    timeidx = DateRange(start=datetime(2009,1,1),
+    #                        end=datetime(2009,12,31),
+    #                        offset=datetools.MonthEnd())
+    #    lons_coarse = np.linspace(-177.5, 177.5, 72)
+    #    lats_coarse = np.linspace(-87.5, 87.5, 36)
+    #    P = Panel(items=timeidx, major_axis=lons_coarse, minor_axis=lats_coarse)
+    #    data = np.random.randn(72*36).reshape((72,36))
+    #    key = datetime(2009,2,28)
+    #    P[key] = data#
+
+    #    assert_almost_equal(P[key].values, data)
+
     def test_major_xs(self):
         ref = self.panel4d['l1']['ItemA']
 
         idx = self.panel4d.major_axis[5]
-        xs  = self.panel4d.major_xs(idx)
+        xs = self.panel4d.major_xs(idx)
 
         assert_series_equal(xs['l1'].T['ItemA'], ref.xs(idx))
 
@@ -427,9 +473,9 @@ class CheckIndexing(object):
         panel4d = self.panel4d
 
         labels = panel4d.labels[[1, 0]]
-        items  = panel4d.items[[1, 0]]
-        dates  = panel4d.major_axis[::2]
-        cols   = ['D', 'C', 'F']
+        items = panel4d.items[[1, 0]]
+        dates = panel4d.major_axis[::2]
+        cols = ['D', 'C', 'F']
 
         # all 4 specified
         assert_panel4d_equal(panel4d.ix[labels, items, dates, cols],
@@ -467,15 +513,16 @@ class CheckIndexing(object):
 
     def test_getitem_fancy_xs(self):
         raise nose.SkipTest
-        #self.assertRaises(NotImplementedError, self.panel4d.major_xs)
-        #self.assertRaises(NotImplementedError, self.panel4d.minor_xs)
+        # self.assertRaises(NotImplementedError, self.panel4d.major_xs)
+        # self.assertRaises(NotImplementedError, self.panel4d.minor_xs)
 
     def test_get_value(self):
         for label in self.panel4d.labels:
             for item in self.panel4d.items:
                 for mjr in self.panel4d.major_axis[::2]:
                     for mnr in self.panel4d.minor_axis:
-                        result   = self.panel4d.get_value(label, item, mjr, mnr)
+                        result = self.panel4d.get_value(
+                            label, item, mjr, mnr)
                         expected = self.panel4d[label][item][mnr][mjr]
                         assert_almost_equal(result, expected)
 
@@ -485,7 +532,8 @@ class CheckIndexing(object):
                 for mjr in self.panel4d.major_axis[::2]:
                     for mnr in self.panel4d.minor_axis:
                         self.panel4d.set_value(label, item, mjr, mnr, 1.)
-                        assert_almost_equal(self.panel4d[label][item][mnr][mjr], 1.)
+                        assert_almost_equal(
+                            self.panel4d[label][item][mnr][mjr], 1.)
 
         # resize
         res = self.panel4d.set_value('l4', 'ItemE', 'foo', 'bar', 1.5)
@@ -496,16 +544,18 @@ class CheckIndexing(object):
         res3 = self.panel4d.set_value('l4', 'ItemE', 'foobar', 'baz', 5)
         self.assert_(com.is_float_dtype(res3['l4'].values))
 
-class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAndSparse):
+
+class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
+                  SafeForLongAndSparse):
 
     _multiprocess_can_split_ = True
 
     @classmethod
-    def assert_panel4d_equal(cls,x, y):
+    def assert_panel4d_equal(cls, x, y):
         assert_panel4d_equal(x, y)
 
     def setUp(self):
-        self.panel4d = tm.makePanel4D()
+        self.panel4d = tm.makePanel4D(nper=8)
         add_nans(self.panel4d)
 
     def test_constructor(self):
@@ -518,9 +568,9 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         assert_panel4d_equal(panel4d, self.panel4d)
 
         # strings handled prop
-        #panel4d = Panel4D([[['foo', 'foo', 'foo',],
+        # panel4d = Panel4D([[['foo', 'foo', 'foo',],
         #                 ['foo', 'foo', 'foo']]])
-        #self.assert_(wp.values.dtype == np.object_)
+        # self.assert_(wp.values.dtype == np.object_)
 
         vals = self.panel4d.values
 
@@ -539,6 +589,13 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         casted2 = Panel4D(zero_filled.values, dtype=int)
 
         exp_values = zero_filled.values.astype(int)
+        assert_almost_equal(casted.values, exp_values)
+        assert_almost_equal(casted2.values, exp_values)
+
+        casted = Panel4D(zero_filled._data, dtype=np.int32)
+        casted2 = Panel4D(zero_filled.values, dtype=np.int32)
+
+        exp_values = zero_filled.values.astype(np.int32)
         assert_almost_equal(casted.values, exp_values)
         assert_almost_equal(casted2.values, exp_values)
 
@@ -571,34 +628,35 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         l1 = self.panel4d['l1']
         l2 = self.panel4d['l2']
 
-        d  = {'A' : l1, 'B' : l2.ix[['ItemB'],:,:] }
-        #d2 = {'A' : itema._series, 'B' : itemb[5:]._series}
-        #d3 = {'A' : DataFrame(itema._series),
+        d = {'A': l1, 'B': l2.ix[['ItemB'], :, :]}
+        # d2 = {'A' : itema._series, 'B' : itemb[5:]._series}
+        # d3 = {'A' : DataFrame(itema._series),
         #      'B' : DataFrame(itemb[5:]._series)}
 
         panel4d = Panel4D(d)
-        #wp2 = Panel.from_dict(d2) # nested Dict
-        #wp3 = Panel.from_dict(d3)
-        #self.assert_(wp.major_axis.equals(self.panel.major_axis))
+        # wp2 = Panel.from_dict(d2) # nested Dict
+        # wp3 = Panel.from_dict(d3)
+        # self.assert_(wp.major_axis.equals(self.panel.major_axis))
         assert_panel_equal(panel4d['A'], self.panel4d['l1'])
-        assert_frame_equal(panel4d.ix['B','ItemB',:,:], self.panel4d.ix['l2',['ItemB'],:,:]['ItemB'])
+        assert_frame_equal(panel4d.ix['B', 'ItemB', :, :],
+                           self.panel4d.ix['l2', ['ItemB'], :, :]['ItemB'])
 
         # intersect
-        #wp = Panel.from_dict(d, intersect=True)
-        #self.assert_(wp.major_axis.equals(itemb.index[5:]))
+        # wp = Panel.from_dict(d, intersect=True)
+        # self.assert_(wp.major_axis.equals(itemb.index[5:]))
 
         # use constructor
-        #assert_panel_equal(Panel(d), Panel.from_dict(d))
-        #assert_panel_equal(Panel(d2), Panel.from_dict(d2))
-        #assert_panel_equal(Panel(d3), Panel.from_dict(d3))
+        # assert_panel_equal(Panel(d), Panel.from_dict(d))
+        # assert_panel_equal(Panel(d2), Panel.from_dict(d2))
+        # assert_panel_equal(Panel(d3), Panel.from_dict(d3))
 
         # cast
-        #dcasted = dict((k, v.reindex(wp.major_axis).fillna(0))
+        # dcasted = dict((k, v.reindex(wp.major_axis).fillna(0))
         #               for k, v in d.iteritems())
-        #result = Panel(dcasted, dtype=int)
-        #expected = Panel(dict((k, v.astype(int))
+        # result = Panel(dcasted, dtype=int)
+        # expected = Panel(dict((k, v.astype(int))
         #                      for k, v in dcasted.iteritems()))
-        #assert_panel_equal(result, expected)
+        # assert_panel_equal(result, expected)
 
     def test_constructor_dict_mixed(self):
         data = dict((k, v.values) for k, v in self.panel4d.iterkv())
@@ -607,10 +665,10 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         self.assert_(result.major_axis.equals(exp_major))
 
         result = Panel4D(data,
-                         labels     = self.panel4d.labels,
-                         items      = self.panel4d.items,
-                         major_axis = self.panel4d.major_axis,
-                         minor_axis = self.panel4d.minor_axis)
+                         labels=self.panel4d.labels,
+                         items=self.panel4d.items,
+                         major_axis=self.panel4d.major_axis,
+                         minor_axis=self.panel4d.minor_axis)
         assert_panel4d_equal(result, self.panel4d)
 
         data['l2'] = self.panel4d['l2']
@@ -625,14 +683,16 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         self.assertRaises(Exception, Panel4D, data)
 
     def test_constructor_resize(self):
-        data  = self.panel4d._data
-        labels= self.panel4d.labels[:-1]
+        data = self.panel4d._data
+        labels = self.panel4d.labels[:-1]
         items = self.panel4d.items[:-1]
         major = self.panel4d.major_axis[:-1]
         minor = self.panel4d.minor_axis[:-1]
 
-        result = Panel4D(data, labels=labels, items=items, major_axis=major, minor_axis=minor)
-        expected = self.panel4d.reindex(labels=labels, items=items, major=major, minor=minor)
+        result = Panel4D(data, labels=labels, items=items,
+                         major_axis=major, minor_axis=minor)
+        expected = self.panel4d.reindex(
+            labels=labels, items=items, major=major, minor=minor)
         assert_panel4d_equal(result, expected)
 
         result = Panel4D(data, items=items, major_axis=major)
@@ -676,7 +736,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         ref = self.panel4d['l2']
 
         # labels
-        result = self.panel4d.reindex(labels=['l1','l2'])
+        result = self.panel4d.reindex(labels=['l1', 'l2'])
         assert_panel_equal(result['l2'], ref)
 
         # items
@@ -686,7 +746,8 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         # major
         new_major = list(self.panel4d.major_axis[:10])
         result = self.panel4d.reindex(major=new_major)
-        assert_frame_equal(result['l2']['ItemB'], ref['ItemB'].reindex(index=new_major))
+        assert_frame_equal(
+            result['l2']['ItemB'], ref['ItemB'].reindex(index=new_major))
 
         # raise exception put both major and major_axis
         self.assertRaises(Exception, self.panel4d.reindex,
@@ -695,12 +756,13 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         # minor
         new_minor = list(self.panel4d.minor_axis[:2])
         result = self.panel4d.reindex(minor=new_minor)
-        assert_frame_equal(result['l2']['ItemB'], ref['ItemB'].reindex(columns=new_minor))
+        assert_frame_equal(
+            result['l2']['ItemB'], ref['ItemB'].reindex(columns=new_minor))
 
         result = self.panel4d.reindex(labels=self.panel4d.labels,
-                                      items =self.panel4d.items,
-                                      major =self.panel4d.major_axis,
-                                      minor =self.panel4d.minor_axis)
+                                      items=self.panel4d.items,
+                                      major=self.panel4d.major_axis,
+                                      minor=self.panel4d.minor_axis)
 
         assert(result.labels is self.panel4d.labels)
         assert(result.items is self.panel4d.items)
@@ -716,19 +778,20 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         larger = smaller.reindex(major=self.panel4d.major_axis,
                                  method='pad')
 
-        assert_panel_equal(larger.ix[:,:,self.panel4d.major_axis[1],:],
-                           smaller.ix[:,:,smaller_major[0],:])
+        assert_panel_equal(larger.ix[:, :, self.panel4d.major_axis[1], :],
+                           smaller.ix[:, :, smaller_major[0], :])
 
         # don't necessarily copy
-        result = self.panel4d.reindex(major=self.panel4d.major_axis, copy=False)
+        result = self.panel4d.reindex(
+            major=self.panel4d.major_axis, copy=False)
         self.assert_(result is self.panel4d)
 
     def test_reindex_like(self):
         # reindex_like
         smaller = self.panel4d.reindex(labels=self.panel4d.labels[:-1],
-                                       items =self.panel4d.items[:-1],
-                                       major =self.panel4d.major_axis[:-1],
-                                       minor =self.panel4d.minor_axis[:-1])
+                                       items=self.panel4d.items[:-1],
+                                       major=self.panel4d.major_axis[:-1],
+                                       minor=self.panel4d.minor_axis[:-1])
         smaller_like = self.panel4d.reindex_like(smaller)
         assert_panel4d_equal(smaller, smaller_like)
 
@@ -751,7 +814,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
     def test_sort_index(self):
         import random
 
-        rlabels= list(self.panel4d.labels)
+        rlabels = list(self.panel4d.labels)
         ritems = list(self.panel4d.items)
         rmajor = list(self.panel4d.major_axis)
         rminor = list(self.panel4d.minor_axis)
@@ -765,18 +828,18 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         assert_panel4d_equal(sorted_panel4d, self.panel4d)
 
         # descending
-        #random_order = self.panel.reindex(items=ritems)
-        #sorted_panel = random_order.sort_index(axis=0, ascending=False)
-        #assert_panel_equal(sorted_panel,
+        # random_order = self.panel.reindex(items=ritems)
+        # sorted_panel = random_order.sort_index(axis=0, ascending=False)
+        # assert_panel_equal(sorted_panel,
         #                   self.panel.reindex(items=self.panel.items[::-1]))
 
-        #random_order = self.panel.reindex(major=rmajor)
-        #sorted_panel = random_order.sort_index(axis=1)
-        #assert_panel_equal(sorted_panel, self.panel)
+        # random_order = self.panel.reindex(major=rmajor)
+        # sorted_panel = random_order.sort_index(axis=1)
+        # assert_panel_equal(sorted_panel, self.panel)
 
-        #random_order = self.panel.reindex(minor=rminor)
-        #sorted_panel = random_order.sort_index(axis=2)
-        #assert_panel_equal(sorted_panel, self.panel)
+        # random_order = self.panel.reindex(minor=rminor)
+        # sorted_panel = random_order.sort_index(axis=2)
+        # assert_panel_equal(sorted_panel, self.panel)
 
     def test_fillna(self):
         filled = self.panel4d.fillna(0)
@@ -798,10 +861,10 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         assert_panel4d_equal(filled, empty)
 
     def test_swapaxes(self):
-        result = self.panel4d.swapaxes('labels','items')
+        result = self.panel4d.swapaxes('labels', 'items')
         self.assert_(result.items is self.panel4d.labels)
 
-        result = self.panel4d.swapaxes('labels','minor')
+        result = self.panel4d.swapaxes('labels', 'minor')
         self.assert_(result.labels is self.panel4d.minor_axis)
 
         result = self.panel4d.swapaxes('items', 'minor')
@@ -845,11 +908,38 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
     #    self.assertEqual(wp['bool'].values.dtype, np.bool_)
     #    assert_frame_equal(wp['bool'], panel['bool'])
 
+    def test_update(self):
+
+        p4d = Panel4D([[[[1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.]],
+                        [[1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.]]]])
+
+        other = Panel4D([[[[3.6, 2., np.nan]],
+                          [[np.nan, np.nan, 7]]]])
+
+        p4d.update(other)
+
+        expected = Panel4D([[[[3.6, 2, 3.],
+                              [1.5, np.nan, 3.],
+                              [1.5, np.nan, 3.],
+                              [1.5, np.nan, 3.]],
+                             [[1.5, np.nan, 7],
+                              [1.5, np.nan, 3.],
+                              [1.5, np.nan, 3.],
+                              [1.5, np.nan, 3.]]]])
+
+        assert_panel4d_equal(p4d, expected)
+
     def test_filter(self):
-        pass
+        raise nose.SkipTest
 
     def test_apply(self):
-        pass
+        raise nose.SkipTest
 
     def test_compound(self):
         raise nose.SkipTest
@@ -916,9 +1006,9 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
 
     def test_rename(self):
         mapper = {
-            'l1' : 'foo',
-            'l2' : 'bar',
-            'l3' : 'baz'
+            'l1': 'foo',
+            'l2': 'bar',
+            'l3': 'baz'
         }
 
         renamed = self.panel4d.rename_axis(mapper, axis=0)
@@ -948,7 +1038,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         assert(agged[2][0] == 4.5)
 
         # test a function that doesn't aggregate
-        f2 = lambda x: np.zeros((2,2))
+        f2 = lambda x: np.zeros((2, 2))
         self.assertRaises(Exception, group_agg, values, bounds, f2)
 
     def test_from_frame_level1_unsorted(self):
@@ -981,5 +1071,6 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
 
 if __name__ == '__main__':
     import nose
-    nose.runmodule(argv=[__file__,'-vvs','-x','--pdb', '--pdb-failure'],
+    nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure',
+                         '--with-timer'],
                    exit=False)

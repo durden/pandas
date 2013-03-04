@@ -6,7 +6,7 @@ try:
     from . import hashtable, tslib, lib
 except Exception:  # pragma: no cover
     import sys
-    e = sys.exc_info()[1] # Py25 and Py3 current exception syntax conflict
+    e = sys.exc_info()[1]  # Py25 and Py3 current exception syntax conflict
     print e
     if 'No module named lib' in str(e):
         raise ImportError('C extensions not built: if you installed already '
@@ -32,7 +32,7 @@ from pandas.tseries.api import *
 from pandas.io.parsers import (read_csv, read_table, read_clipboard,
                                read_fwf, to_clipboard, ExcelFile,
                                ExcelWriter)
-from pandas.io.pytables import HDFStore
+from pandas.io.pytables import HDFStore, Term, get_store
 from pandas.util.testing import debug
 
 from pandas.tools.describe import value_range
@@ -40,3 +40,4 @@ from pandas.tools.merge import merge, concat, ordered_merge
 from pandas.tools.pivot import pivot_table, crosstab
 from pandas.tools.plotting import scatter_matrix, plot_params
 from pandas.tools.tile import cut, qcut
+from pandas.core.reshape import melt

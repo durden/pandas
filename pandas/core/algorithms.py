@@ -115,13 +115,14 @@ def factorize(values, sort=False, order=None, na_sentinel=-1):
     Returns
     -------
     """
-    values = np.asarray(values)
-    is_datetime = com.is_datetime64_dtype(values)
-    (hash_klass, vec_klass), values = _get_data_algo(values, _hashtables)
+    from pandas.tseries.period import PeriodIndex
+    vals = np.asarray(values)
+    is_datetime = com.is_datetime64_dtype(vals)
+    (hash_klass, vec_klass), vals = _get_data_algo(vals, _hashtables)
 
-    table = hash_klass(len(values))
+    table = hash_klass(len(vals))
     uniques = vec_klass()
-    labels = table.get_labels(values, uniques, 0, na_sentinel)
+    labels = table.get_labels(vals, uniques, 0, na_sentinel)
 
     labels = com._ensure_platform_int(labels)
 
@@ -140,6 +141,8 @@ def factorize(values, sort=False, order=None, na_sentinel=-1):
 
     if is_datetime:
         uniques = uniques.view('M8[ns]')
+    if isinstance(values, PeriodIndex):
+        uniques = PeriodIndex(ordinal=uniques, freq=values.freq)
 
     return labels, uniques
 
@@ -161,20 +164,18 @@ def value_counts(values, sort=True, ascending=False):
     value_counts : Series
     """
     from pandas.core.series import Series
-    from collections import defaultdict
 
     values = np.asarray(values)
 
     if com.is_integer_dtype(values.dtype):
         values = com._ensure_int64(values)
         keys, counts = htable.value_count_int64(values)
-        result = Series(counts, index=keys)
     else:
-        counter = defaultdict(lambda: 0)
-        values = values[com.notnull(values)]
-        for value in values:
-            counter[value] += 1
-        result = Series(counter)
+        mask = com.isnull(values)
+        values = com._ensure_object(values)
+        keys, counts = htable.value_count_object(values, mask)
+
+    result = Series(counts, index=keys)
 
     if sort:
         result.sort()
@@ -213,11 +214,11 @@ def quantile(x, q, interpolation_method='fraction'):
 
     Parameters
     ----------
-    a : ndarray
+    x : ndarray
         Values from which to extract score.
     q : scalar or array
         Percentile at which to extract score.
-    interpolation : {'fraction', 'lower', 'higher'}, optional
+    interpolation_method : {'fraction', 'lower', 'higher'}, optional
         This optional parameter specifies the interpolation method to use,
         when the desired quantile lies between two data points `i` and `j`:
 
